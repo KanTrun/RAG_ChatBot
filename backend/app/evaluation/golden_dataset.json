@@ -1,0 +1,25 @@
+{
+  "description": "Golden Q&A dataset for RAG evaluation. Expand to 50+ pairs for meaningful metrics.",
+  "questions": [
+    {
+      "question": "What is the purpose of this system?",
+      "ground_truth": "This system is a RAG-based AI chatbot that answers questions from private documents using retrieval-augmented generation."
+    },
+    {
+      "question": "What document formats are supported?",
+      "ground_truth": "The system supports PDF, DOCX, TXT, MD, and HTML document formats."
+    },
+    {
+      "question": "How does the retrieval pipeline work?",
+      "ground_truth": "The retrieval pipeline uses hybrid search combining BM25 full-text search with vector similarity search, merges results via Reciprocal Rank Fusion, then reranks with a cross-encoder model."
+    },
+    {
+      "question": "What embedding model is used?",
+      "ground_truth": "BGE-M3 is used for embeddings, producing both dense (1024-dim) and sparse vectors in a single forward pass."
+    },
+    {
+      "question": "How are documents chunked?",
+      "ground_truth": "Documents are chunked using recursive character splitting with a default size of 512 tokens and 10% overlap."
+    }
+  ]
+}

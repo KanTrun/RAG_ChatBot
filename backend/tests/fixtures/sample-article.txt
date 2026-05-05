@@ -1,0 +1,3 @@
+RAG systems combine retrieval and generation. Hybrid search uses vector similarity and BM25 keyword search. The test article mentions AlphaProject, Vietnamese support, citations, and access control.
+
+Administrators can upload documents. Viewers can ask grounded questions and receive answers with source citations.
