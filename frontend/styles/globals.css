@@ -1,0 +1,288 @@
+@import "tailwindcss";
+
+/* Design tokens from docs/design-guidelines.md */
+@theme {
+  /* Colors - Dark mode (default) */
+  --color-surface-primary: #0B0F1A;
+  --color-surface-secondary: #111827;
+  --color-surface-tertiary: #1F2937;
+  --color-surface-input: #1A2332;
+  --color-surface-hover: #263044;
+
+  --color-border: #1E293B;
+  --color-border-strong: #334155;
+
+  --color-content-primary: #F1F5F9;
+  --color-content-secondary: #94A3B8;
+  --color-content-tertiary: #64748B;
+
+  --color-accent-primary: #6366F1;
+  --color-accent-primary-hover: #818CF8;
+  --color-accent-secondary: #8B5CF6;
+  --color-accent-success: #10B981;
+  --color-accent-warning: #F59E0B;
+  --color-accent-error: #EF4444;
+  --color-accent-info: #3B82F6;
+  --color-accent-citation: #14B8A6;
+
+  /* Typography */
+  --font-heading: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-body: "Source Sans 3", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+[data-theme="light"] {
+  --color-surface-primary: #f7f9fc;
+  --color-surface-secondary: #ffffff;
+  --color-surface-tertiary: #eef3f8;
+  --color-surface-input: #ffffff;
+  --color-surface-hover: #e7edf5;
+
+  --color-border: #d9e2ec;
+  --color-border-strong: #bcccdc;
+
+  --color-content-primary: #102033;
+  --color-content-secondary: #486176;
+  --color-content-tertiary: #7a8fa3;
+
+  --color-accent-primary: #4f46e5;
+  --color-accent-primary-hover: #5b5af0;
+  --color-accent-secondary: #7c3aed;
+  --color-accent-success: #0f9f72;
+  --color-accent-warning: #d18b14;
+  --color-accent-error: #dc3f59;
+  --color-accent-info: #2563eb;
+  --color-accent-citation: #0f9b8e;
+}
+
+/* Base styles */
+html {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-surface-primary);
+  color: var(--color-content-primary);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+code, pre {
+  font-family: var(--font-mono);
+}
+
+@keyframes chat-skeleton-shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes chat-live-dot {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.chat-skeleton-shimmer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+  animation: chat-skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+.chat-live-dot {
+  animation: chat-live-dot 1s ease-in-out infinite;
+}
+
+.auth-screen {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-accent-primary) 20%, transparent) 0, transparent 34%),
+    radial-gradient(circle at top right, color-mix(in srgb, var(--color-accent-secondary) 16%, transparent) 0, transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-secondary) 68%, transparent), transparent 44%),
+    var(--color-surface-primary);
+}
+
+.auth-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-border) 24%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-border) 18%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 82%);
+  pointer-events: none;
+}
+
+.auth-shell {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--color-border-strong) 72%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-secondary) 92%, transparent), color-mix(in srgb, var(--color-surface-secondary) 82%, transparent));
+  box-shadow:
+    0 30px 90px rgba(2, 6, 23, 0.42),
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 0 0 1px rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(22px);
+}
+
+[data-theme="light"] .auth-shell {
+  box-shadow:
+    0 28px 60px rgba(15, 23, 42, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.85) inset,
+    0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.auth-hero-panel {
+  position: relative;
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--color-accent-primary) 17%, transparent), transparent 52%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-secondary) 42%, transparent), transparent),
+    color-mix(in srgb, var(--color-surface-primary) 70%, black 30%);
+}
+
+[data-theme="light"] .auth-hero-panel {
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--color-accent-primary) 11%, white), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.64)),
+    #edf3fb;
+}
+
+.auth-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-secondary) 94%, transparent), color-mix(in srgb, var(--color-surface-tertiary) 84%, transparent));
+  box-shadow:
+    0 18px 48px rgba(2, 6, 23, 0.22),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+[data-theme="light"] .auth-card {
+  box-shadow:
+    0 22px 48px rgba(15, 23, 42, 0.09),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+}
+
+.auth-input {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 94%, transparent);
+  background: color-mix(in srgb, var(--color-surface-input) 88%, transparent);
+  padding: 0.9rem 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--color-content-primary);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+
+.auth-input::placeholder {
+  color: var(--color-content-tertiary);
+}
+
+.auth-input:hover {
+  background: color-mix(in srgb, var(--color-surface-hover) 56%, var(--color-surface-input));
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent-primary) 72%, white 8%);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-accent-primary) 18%, transparent),
+    0 14px 28px rgba(79, 70, 229, 0.14);
+}
+
+.auth-button-primary {
+  border-radius: 1rem;
+  background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-secondary));
+  box-shadow:
+    0 16px 34px color-mix(in srgb, var(--color-accent-primary) 22%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    opacity 150ms ease,
+    filter 150ms ease;
+}
+
+.auth-button-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+  box-shadow:
+    0 20px 40px color-mix(in srgb, var(--color-accent-primary) 30%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.24) inset;
+}
+
+.auth-button-primary:disabled {
+  transform: none;
+  opacity: 0.58;
+  filter: none;
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.14),
+    0 1px 0 rgba(255, 255, 255, 0.12) inset;
+}
+
+.auth-button-primary:focus-visible,
+.auth-button-social:focus-visible,
+.auth-inline-button:focus-visible,
+.auth-text-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent-primary) 82%, white 8%);
+  outline-offset: 3px;
+}
+
+.auth-button-social {
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  background: color-mix(in srgb, var(--color-surface-secondary) 92%, transparent);
+  box-shadow:
+    0 10px 30px rgba(2, 6, 23, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.auth-button-social:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-border-strong) 92%, transparent);
+  background: color-mix(in srgb, var(--color-surface-hover) 42%, var(--color-surface-secondary));
+  box-shadow:
+    0 14px 34px rgba(2, 6, 23, 0.16),
+    0 1px 0 rgba(255, 255, 255, 0.08) inset;
+}
+
+.auth-stat-chip {
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-surface-secondary) 58%, transparent);
+  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-skeleton-shimmer::before,
+  .chat-live-dot {
+    animation: none;
+  }
+}
