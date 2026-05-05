@@ -1,0 +1,196 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: rag-db
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: ragdb
+    ports:
+      - target: 5432
+        published: "${DB_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ragnet
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    ports:
+      - target: 6379
+        published: "${REDIS_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ragnet
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - target: 11434
+        published: "${OLLAMA_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - ragnet
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag-migrate
+    command: python -m alembic upgrade head
+    volumes:
+      - ./backend:/app
+      - backend-cache:/root/.cache
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
+      DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ragnet
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag-backend
+    ports:
+      - target: 8000
+        published: "${BACKEND_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - ./backend:/app
+      - backend-cache:/root/.cache
+      - uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
+      DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+      EMBEDDING_PROVIDER: ollama
+      LLM_PROVIDER: ollama
+      LLM_MODEL: qwen2.5:7b
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBEDDING_MODEL: mxbai-embed-large
+      INGESTION_DISPATCH_MODE: ${INGESTION_DISPATCH_MODE:-auto}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_DISPLAY_NAME: ${BOOTSTRAP_ADMIN_DISPLAY_NAME:-Local Admin}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - ragnet
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag-celery-worker
+    command: python -m celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./backend:/app
+      - backend-cache:/root/.cache
+      - uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
+      DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+      EMBEDDING_PROVIDER: ollama
+      LLM_PROVIDER: ollama
+      LLM_MODEL: qwen2.5:7b
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBEDDING_MODEL: mxbai-embed-large
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - ragnet
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rag-frontend
+    ports:
+      - target: 3000
+        published: "${FRONTEND_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: ${FRONTEND_API_PUBLIC_URL:-}
+      NEXTAUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-}
+      AUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-}
+      BACKEND_URL: http://backend:8000
+      NEXT_PUBLIC_BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - ragnet
+
+volumes:
+  pgdata:
+  backend-cache:
+  uploads:
+  ollama-data:
+
+networks:
+  ragnet:
+    driver: bridge
