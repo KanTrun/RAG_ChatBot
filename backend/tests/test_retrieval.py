@@ -153,6 +153,8 @@ def test_build_retrieval_plan_uses_ordered_scan_for_summaries():
     assert plan.prefer_document_order is True
     assert plan.balanced_per_document is True
     assert "method" in plan.summary_axes
+    assert plan.document_target_required is True
+    assert plan.query_classification == "document-targeted"
 
 
 def test_build_retrieval_plan_balances_compare_requests_for_multiple_documents():
@@ -161,6 +163,90 @@ def test_build_retrieval_plan_balances_compare_requests_for_multiple_documents()
     assert plan.intent == RetrievalIntent.compare
     assert plan.balanced_per_document is True
     assert plan.ordered_document_scan is False
+
+
+def test_build_retrieval_plan_treats_active_guide_queries_as_document_targeted():
+    compare_plan = build_retrieval_plan(
+        "Compare the two guides",
+        active_document_count=2,
+        has_active_document_scope=True,
+    )
+    summary_plan = build_retrieval_plan(
+        "Summarize this guide",
+        active_document_count=1,
+        has_active_document_scope=True,
+    )
+
+    assert compare_plan.document_target_required is True
+    assert compare_plan.query_classification == "document-targeted"
+    assert summary_plan.document_target_required is True
+    assert summary_plan.query_classification == "document-targeted"
+
+
+def test_build_retrieval_plan_detects_factual_queries_and_prioritizes_technical_sections():
+    plan = build_retrieval_plan("Which machine learning model does the project use?", active_document_count=1)
+
+    assert plan.intent == RetrievalIntent.factual
+    assert "method" in plan.target_block_types
+    assert "results" in plan.target_block_types
+    assert any(label == "factual_method" for label, _text in plan.query_variants)
+
+
+def test_build_retrieval_plan_detects_definition_queries():
+    plan = build_retrieval_plan("What is retrieval augmented generation?", active_document_count=1)
+
+    assert plan.intent == RetrievalIntent.definition
+    assert "abstract" in plan.target_block_types
+    assert any(label == "definition_intro" for label, _text in plan.query_variants)
+    assert plan.document_target_required is False
+    assert plan.query_classification == "general-allowed"
+
+
+def test_build_retrieval_plan_detects_multi_hop_queries():
+    plan = build_retrieval_plan("How does the method affect the final results?", active_document_count=1)
+
+    assert plan.intent == RetrievalIntent.multi_hop
+    assert plan.require_multi_section is True
+    assert any(label == "multi_hop_results" for label, _text in plan.query_variants)
+    assert plan.document_target_required is True
+
+
+def test_build_retrieval_plan_marks_cv_queries_as_document_targeted_without_active_scope():
+    plan = build_retrieval_plan("What skills are listed in this CV?", active_document_count=0)
+
+    assert plan.document_target_required is True
+    assert plan.query_classification == "document-targeted"
+    assert plan.outside_knowledge_blocked_reason is not None
+
+
+def test_build_retrieval_plan_keeps_general_questions_general_even_with_active_documents():
+    plan = build_retrieval_plan(
+        "How does caching work?",
+        active_document_count=1,
+        has_active_document_scope=True,
+    )
+
+    assert plan.document_target_required is False
+    assert plan.query_classification == "general-allowed"
+
+
+def test_build_retrieval_plan_uses_profile_variants_as_an_adapter_not_a_separate_core_path():
+    plan = build_retrieval_plan("Tom tat CV nay", active_document_count=1)
+
+    assert plan.intent == RetrievalIntent.summary
+    assert plan.require_multi_section is True
+    assert plan.document_target_required is True
+    assert "skills" in plan.target_block_types
+    assert any(label == "profile_skills" for label, _text in plan.query_variants)
+    assert any(label == "topic" for label, _text in plan.query_variants)
+
+
+def test_build_retrieval_plan_enables_exhaustive_mode_for_full_list_queries():
+    plan = build_retrieval_plan("List all information mentioned in this document", active_document_count=1)
+
+    assert plan.exhaustive_mode is True
+    assert plan.ordered_document_scan is True
+    assert plan.coverage_min_sections >= 3
 
 
 def test_section_policy_penalizes_acknowledgements_for_normal_questions():
@@ -223,6 +309,17 @@ def test_section_policy_prefers_explicit_block_type_metadata():
     )
 
     assert policy.kind == "method"
+    assert policy.relevance_bias > 0
+
+
+def test_section_policy_detects_procedure_sections_for_manual_like_queries():
+    policy = evaluate_chunk_policy(
+        "What are the setup steps in this guide?",
+        "Installation steps: first configure the server, then restart the service.",
+        {"section": "Setup Guide", "chunk_index": 8},
+    )
+
+    assert policy.kind == "procedure"
     assert policy.relevance_bias > 0
 
 
@@ -312,6 +409,46 @@ def test_answer_brief_marks_missing_summary_slots_explicitly():
     assert brief is not None
     assert "Phuong phap chinh" in brief
     assert "khong tim thay du bang chung" in brief
+
+
+def test_answer_brief_uses_profile_summary_labels_for_cv_queries():
+    brief = build_answer_brief(
+        "summary",
+        [
+            SourceReference(
+                citation_number=1,
+                document_title="Candidate CV",
+                file_name="cv.pdf",
+                page_number=1,
+                section="Skills",
+                section_path="Candidate CV > Skills",
+                block_type="body",
+                chunk_id="chunk-1",
+                score=0.72,
+                excerpt="Python, TypeScript, PostgreSQL, Docker",
+                answer_section="method",
+            )
+        ],
+        query="Tom tat CV nay",
+    )
+
+    assert brief is not None
+    assert "Profile overview" in brief
+    assert "Skills and technology" in brief
+    assert "Question focus: Tom tat CV nay" in brief
+
+
+def test_answer_brief_marks_low_support_for_factual_questions():
+    brief = build_answer_brief(
+        "factual",
+        [],
+        query="Which model is used?",
+        low_confidence=True,
+    )
+
+    assert brief is not None
+    assert "Question focus: Which model is used?" in brief
+    assert "insufficient evidence" in brief
 
 
 def test_grounded_fallback_answer_is_structured_and_cited():

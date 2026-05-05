@@ -10,7 +10,7 @@ import {
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { SourcesPanel } from "@/components/chat/sources-panel";
-import { apiFetch, apiJson, getApiErrorMessage } from "@/lib/client-api";
+import { ApiError, apiFetch, apiJson, getApiErrorMessage } from "@/lib/client-api";
 import { type UploadedDocument } from "@/lib/document-upload";
 
 interface Message {
@@ -27,8 +27,18 @@ interface Source {
   file_name: string;
   page_number: number | null;
   section: string | null;
+  section_path?: string | null;
+  block_type?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  parent_block_id?: string | null;
+  heading_level?: number | null;
+  ingestion_version?: string | null;
   score: number;
   excerpt?: string | null;
+  selection_reason?: string | null;
+  answer_section?: string | null;
+  coverage_labels?: string[] | null;
 }
 
 interface ConversationDetails {
@@ -92,6 +102,34 @@ function parseDocumentIdsParam(rawValue: string | null) {
     .filter(Boolean);
 }
 
+function collectDeletedMessageIds(messages: Message[], targetMessageId: string) {
+  const targetIndex = messages.findIndex((message) => message.id === targetMessageId);
+  if (targetIndex === -1) return [];
+
+  const target = messages[targetIndex];
+  const deletedIds = new Set<string>([target.id]);
+  if (target.role === "user") {
+    const nextMessage = messages[targetIndex + 1];
+    if (nextMessage?.role === "assistant") {
+      deletedIds.add(nextMessage.id);
+    }
+  } else {
+    const previousMessage = messages[targetIndex - 1];
+    if (previousMessage?.role === "user") {
+      deletedIds.add(previousMessage.id);
+    }
+  }
+
+  return Array.from(deletedIds);
+}
+
+function findPreviousUserMessage(messages: Message[], assistantMessageId: string) {
+  const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
+  if (targetIndex <= 0) return null;
+  const previous = messages[targetIndex - 1];
+  return previous?.role === "user" ? previous : null;
+}
+
 function ChatPageContent() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -103,9 +141,19 @@ function ChatPageContent() {
   const [activeCitation, setActiveCitation] = useState<number | null>(null);
   const [responseMode, setResponseMode] =
     useState<ChatResponseMode>("strict_documents");
+  const [composerDraft, setComposerDraft] = useState("");
+  const [composerMode, setComposerMode] = useState<
+    { kind: "new" } | { kind: "edit" | "regenerate"; targetMessageId: string }
+  >({ kind: "new" });
+  const [messageDeleteError, setMessageDeleteError] = useState("");
+  const [messageActionError, setMessageActionError] = useState("");
+  const [messageActionNotice, setMessageActionNotice] = useState("");
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const activeDocumentSyncChainRef = useRef<Promise<void>>(Promise.resolve());
+  const messageMutationVersionRef = useRef(0);
   const router = useRouter();
+  const replaceRoute = router.replace;
   const searchParams = useSearchParams();
   const { data: session } = useSession();
   const sessionInvalid = session?.error === "RefreshAccessTokenError";
@@ -150,9 +198,14 @@ function ChatPageContent() {
     abortRef.current = null;
     setIsLoading(false);
     setActiveDocumentSyncError("");
+    setMessageDeleteError("");
+    setMessageActionError("");
+    setMessageActionNotice("");
     setSources([]);
     setSourcesOpen(false);
     setActiveCitation(null);
+    setComposerMode({ kind: "new" });
+    setComposerDraft("");
 
     if (!nextConversationId) {
       setConversationId(null);
@@ -191,6 +244,7 @@ function ChatPageContent() {
 
     let cancelled = false;
     setConversationId(nextConversationId);
+    const hydrationMutationVersion = messageMutationVersionRef.current;
 
     void Promise.all([
       apiJson<Message[]>(`/api/v1/conversations/${nextConversationId}/messages`),
@@ -198,13 +252,20 @@ function ChatPageContent() {
     ])
       .then(([history, conversation]) => {
         if (cancelled) return;
-        setMessages(history);
+        setMessages((current) =>
+          messageMutationVersionRef.current === hydrationMutationVersion ? history : current,
+        );
         setActiveDocuments(conversation.active_documents || []);
       })
       .catch((error) => {
         if (cancelled) return;
         setConversationId(null);
         setActiveDocuments([]);
+        if (error instanceof ApiError && error.status === 404) {
+          setMessages([]);
+          replaceRoute("/chat");
+          return;
+        }
         setMessages([
           {
             id: crypto.randomUUID(),
@@ -217,11 +278,31 @@ function ChatPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [selectedConversationId, selectedDocumentIdsParam]);
+  }, [replaceRoute, selectedConversationId, selectedDocumentIdsParam]);
 
   const handleSend = useCallback(
     async (query: string, requestedResponseMode: ChatResponseMode) => {
       if (!query.trim() || isLoading) return;
+
+      const replacementMode = composerMode.kind === "new" ? null : composerMode;
+      const replacementDeletedIds =
+        replacementMode && conversationId
+          ? collectDeletedMessageIds(messages, replacementMode.targetMessageId)
+          : [];
+      const replacementSnapshot =
+        replacementMode && conversationId && replacementDeletedIds.length > 0
+          ? {
+              previousMessages: messages,
+              previousSources: sources,
+              previousSourcesOpen: sourcesOpen,
+              previousActiveCitation: activeCitation,
+              previousComposerMode: replacementMode,
+            }
+          : null;
+
+      if (replacementMode && !replacementSnapshot) {
+        setComposerMode({ kind: "new" });
+      }
 
       const userMessage: Message = {
         id: crypto.randomUUID(),
@@ -235,9 +316,28 @@ function ChatPageContent() {
         content: "",
         state: "streaming",
       };
-      setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
+      messageMutationVersionRef.current += 1;
+      setMessages((current) => {
+        const baseMessages = replacementDeletedIds.length
+          ? current.filter((message) => !replacementDeletedIds.includes(message.id))
+          : current;
+        return [...baseMessages, userMessage, assistantPlaceholder];
+      });
       setIsLoading(true);
+      setDeletingMessageId(replacementMode?.targetMessageId ?? null);
       setSources([]);
+      setMessageDeleteError("");
+      setMessageActionError("");
+      setMessageActionNotice("");
+      setSourcesOpen(false);
+      setActiveCitation(null);
+      setComposerMode({ kind: "new" });
+      setComposerDraft("");
+      window.dispatchEvent(
+        new CustomEvent("chat-stream-status", {
+          detail: { conversationId, active: true },
+        }),
+      );
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -249,6 +349,7 @@ function ChatPageContent() {
           body: JSON.stringify({
             query,
             conversation_id: conversationId,
+            replace_message_id: replacementSnapshot?.previousComposerMode.targetMessageId ?? null,
             document_ids: activeDocuments.map((document) => document.id),
             response_mode: requestedResponseMode,
           }),
@@ -318,25 +419,26 @@ function ChatPageContent() {
               if (Array.isArray(event.active_documents)) {
                 setActiveDocuments(event.active_documents);
               }
-              if (event.message_id) {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantMessageId
-                      ? { ...m, id: event.message_id, state: "complete" }
-                      : m
-                  )
-                );
-              } else {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantMessageId ? { ...m, state: "complete" } : m
-                  )
-                );
-              }
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id === userMessage.id) {
+                    return event.user_message_id ? { ...m, id: event.user_message_id } : m;
+                  }
+                  if (m.id === assistantMessageId) {
+                    return {
+                      ...m,
+                      id: event.message_id || m.id,
+                      state: "complete",
+                    };
+                  }
+                  return m;
+                }),
+              );
               if (!conversationId && event.conversation_id) {
                 setConversationId(event.conversation_id);
                 router.replace(`/chat?conversationId=${event.conversation_id}`);
               }
+              window.dispatchEvent(new Event("chat-conversations-changed"));
             } else if (event.type === "error" && event.content) {
               throw new Error(event.content);
             }
@@ -344,24 +446,50 @@ function ChatPageContent() {
         }
       } catch (err: unknown) {
         if (!(err instanceof Error && err.name === "AbortError")) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMessageId
-                ? {
-                    ...m,
-                    content: getApiErrorMessage(err),
-                    state: "error",
-                  }
-                : m
-            )
-          );
+          if (replacementSnapshot) {
+            setMessages(replacementSnapshot.previousMessages);
+            setSources(replacementSnapshot.previousSources);
+            setSourcesOpen(replacementSnapshot.previousSourcesOpen);
+            setActiveCitation(replacementSnapshot.previousActiveCitation);
+            setComposerMode(replacementSnapshot.previousComposerMode);
+            setComposerDraft(query);
+            setMessageActionError(getApiErrorMessage(err));
+          } else {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMessageId
+                  ? {
+                      ...m,
+                      content: getApiErrorMessage(err),
+                      state: "error",
+                    }
+                  : m
+              ),
+            );
+          }
         }
       } finally {
         setIsLoading(false);
+        setDeletingMessageId(null);
         abortRef.current = null;
+        window.dispatchEvent(
+          new CustomEvent("chat-stream-status", {
+            detail: { conversationId, active: false },
+          }),
+        );
       }
     },
-    [activeDocuments, conversationId, isLoading, router]
+    [
+      activeCitation,
+      activeDocuments,
+      composerMode,
+      conversationId,
+      isLoading,
+      messages,
+      router,
+      sources,
+      sourcesOpen,
+    ],
   );
 
   const handleCitationClick = useCallback((num: number, citationSources?: Source[]) => {
@@ -374,6 +502,7 @@ function ChatPageContent() {
 
   const handleUploadComplete = useCallback(
     (document: UploadedDocument) => {
+      messageMutationVersionRef.current += 1;
       setMessages((prev) => [
         ...prev,
         {
@@ -409,6 +538,92 @@ function ChatPageContent() {
   const handleClearActiveDocuments = useCallback(() => {
     queueActiveDocumentSync([]);
   }, [queueActiveDocumentSync]);
+
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      if (!conversationId) return;
+
+      const deletedIds = collectDeletedMessageIds(messages, messageId);
+      if (deletedIds.length === 0) return;
+
+      const confirmed = window.confirm(
+        "Delete this chat exchange permanently? This cannot be undone.",
+      );
+      if (!confirmed) return;
+
+      const previousMessages = messages;
+      const previousSources = sources;
+      const previousSourcesOpen = sourcesOpen;
+      const previousActiveCitation = activeCitation;
+
+      setMessageDeleteError("");
+      setMessageActionError("");
+      setDeletingMessageId(messageId);
+      messageMutationVersionRef.current += 1;
+      setMessages((current) => current.filter((message) => !deletedIds.includes(message.id)));
+      setSources([]);
+      setSourcesOpen(false);
+      setActiveCitation(null);
+
+      try {
+        await apiJson<void>(
+          `/api/v1/conversations/${conversationId}/messages/${messageId}`,
+          { method: "DELETE" },
+        );
+        window.dispatchEvent(new Event("chat-conversations-changed"));
+      } catch (error) {
+        setMessages(previousMessages);
+        setSources(previousSources);
+        setSourcesOpen(previousSourcesOpen);
+        setActiveCitation(previousActiveCitation);
+        setMessageDeleteError(getApiErrorMessage(error));
+      } finally {
+        setDeletingMessageId(null);
+      }
+    },
+    [activeCitation, conversationId, messages, sources, sourcesOpen],
+  );
+
+  const handleEditMessage = useCallback((messageId: string, content: string) => {
+    setMessageDeleteError("");
+    setMessageActionError("");
+    setComposerMode({ kind: "edit", targetMessageId: messageId });
+    setComposerDraft(content);
+    setMessageActionNotice("");
+  }, []);
+
+  const handleRegenerateMessage = useCallback(
+    (messageId: string) => {
+      setMessageDeleteError("");
+      const previousUserMessage = findPreviousUserMessage(messages, messageId);
+      if (!previousUserMessage) {
+        setMessageActionError("Could not find the user prompt for this answer.");
+        return;
+      }
+
+      setMessageActionError("");
+      setComposerMode({ kind: "regenerate", targetMessageId: messageId });
+      setComposerDraft(previousUserMessage.content);
+      setMessageActionNotice("");
+    },
+    [messages],
+  );
+
+  const handleCopyMessage = useCallback(async (content: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        throw new Error("Clipboard is not available in this browser.");
+      }
+      setMessageDeleteError("");
+      setMessageActionError("");
+      setMessageActionNotice("Đã sao chép câu trả lời vào clipboard.");
+    } catch (error) {
+      setMessageActionNotice("");
+      setMessageActionError(getApiErrorMessage(error));
+    }
+  }, []);
 
   // Keyboard shortcut: / or Ctrl+K to focus input
   useEffect(() => {
@@ -448,6 +663,11 @@ function ChatPageContent() {
           <ChatMessageList
             messages={messages}
             onCitationClick={handleCitationClick}
+            onDeleteMessage={handleDeleteMessage}
+            onEditMessage={handleEditMessage}
+            onRegenerateMessage={handleRegenerateMessage}
+            onCopyMessage={handleCopyMessage}
+            deleteDisabled={!conversationId || isLoading || sessionInvalid || deletingMessageId !== null}
           />
         )}
 
@@ -468,6 +688,21 @@ function ChatPageContent() {
             Failed to sync active documents for this conversation: {activeDocumentSyncError}
           </p>
         )}
+        {messageDeleteError && (
+          <p role="alert" className="px-4 pb-2 text-center text-xs text-red-400">
+            Failed to delete message: {messageDeleteError}
+          </p>
+        )}
+        {messageActionError && (
+          <p role="alert" className="px-4 pb-2 text-center text-xs text-red-400">
+            Message action failed: {messageActionError}
+          </p>
+        )}
+        {messageActionNotice && (
+          <p role="status" className="px-4 pb-2 text-center text-xs text-accent-citation">
+            {messageActionNotice}
+          </p>
+        )}
         <ChatInput
           onSend={handleSend}
           disabled={isLoading || sessionInvalid}
@@ -475,6 +710,22 @@ function ChatPageContent() {
           onUploadStatusChange={handleUploadStatusChange}
           responseMode={responseMode}
           onResponseModeChange={setResponseMode}
+          draftValue={composerDraft}
+          onDraftValueChange={setComposerDraft}
+          editLabel={
+            composerMode.kind === "edit"
+              ? "Đang sửa câu hỏi"
+              : composerMode.kind === "regenerate"
+                ? "Đang tạo lại câu trả lời từ câu hỏi gần nhất"
+                : null
+          }
+          onCancelEdit={() => {
+            setMessageDeleteError("");
+            setMessageActionError("");
+            setMessageActionNotice("");
+            setComposerMode({ kind: "new" });
+            setComposerDraft("");
+          }}
         />
       </div>
 

@@ -12,6 +12,7 @@ import { ChatSidebar } from "@/components/chat/chat-sidebar";
 const signOut = vi.fn();
 const replace = vi.fn();
 let searchParams = new URLSearchParams();
+const confirmMock = vi.fn(() => true);
 
 vi.mock("next-auth/react", () => ({
   signOut: (...args: unknown[]) => signOut(...args),
@@ -32,6 +33,8 @@ describe("chat components", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     searchParams = new URLSearchParams();
+    vi.stubGlobal("confirm", confirmMock);
+    confirmMock.mockReturnValue(true);
   });
 
   it("renders user and assistant messages", () => {
@@ -243,6 +246,96 @@ describe("chat components", () => {
     );
   });
 
+  it("deletes a conversation from the sidebar and returns to empty chat when it was active", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-1");
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [
+            {
+              id: "conv-1",
+              title: "Old chat",
+              updated_at: "2026-05-04T00:00:00Z",
+              message_count: 2,
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+      }) as unknown as typeof fetch;
+
+    render(<ChatSidebar open onToggle={vi.fn()} />);
+
+    expect(await screen.findByRole("link", { name: /Old chat/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Mở menu đoạn chat Old chat/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Xóa đoạn chat" }));
+
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/v1/conversations/conv-1",
+        expect.objectContaining({ method: "DELETE", credentials: "same-origin" }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText("Old chat")).not.toBeInTheDocument());
+    expect(replace).toHaveBeenCalledWith("/chat");
+  });
+
+  it("renames a conversation from the sidebar overflow menu", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [
+            {
+              id: "conv-1",
+              title: "Old chat",
+              updated_at: "2026-05-04T00:00:00Z",
+              message_count: 2,
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "conv-1",
+          title: "Renamed chat",
+          created_at: "2026-05-04T00:00:00Z",
+          updated_at: "2026-05-04T00:00:02Z",
+          message_count: 2,
+          active_documents: [],
+        }),
+      }) as unknown as typeof fetch;
+
+    render(<ChatSidebar open onToggle={vi.fn()} />);
+
+    expect(await screen.findByRole("link", { name: /Old chat/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Mở menu đoạn chat Old chat/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Đổi tên đoạn chat" }));
+
+    const renameInput = await screen.findByRole("textbox", {
+      name: /Rename conversation Old chat/i,
+    });
+    fireEvent.change(renameInput, { target: { value: "Renamed chat" } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/v1/conversations/conv-1",
+        expect.objectContaining({ method: "PATCH", credentials: "same-origin" }),
+      ),
+    );
+    expect(await screen.findByText("Renamed chat")).toBeInTheDocument();
+  });
+
   it("logs out through the authenticated shell footer", () => {
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
 
@@ -294,6 +387,22 @@ describe("chat components", () => {
       "/api/v1/conversations/conv-123/messages",
       expect.objectContaining({ credentials: "same-origin" }),
     );
+  });
+
+  it("drops a stale conversation id from the URL when the conversation no longer exists", async () => {
+    searchParams = new URLSearchParams("conversationId=missing-conv");
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "Conversation not found" }),
+      }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/chat"));
+    expect(screen.queryByText("Conversation not found")).not.toBeInTheDocument();
   });
 
   it("adds a professional upload notice into the chat thread", async () => {
@@ -515,5 +624,472 @@ describe("chat components", () => {
       query: "What is machine learning?",
       response_mode: "hybrid_general",
     });
+  });
+
+  it("deletes a message pair from the loaded conversation without reloading it", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ([
+          { id: "m1", role: "user", content: "Question" },
+          { id: "m2", role: "assistant", content: "Answer" },
+          { id: "m3", role: "user", content: "Another question" },
+          { id: "m4", role: "assistant", content: "Another answer" },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "conv-123",
+          title: "Scoped chat",
+          created_at: "2026-05-04T00:00:00Z",
+          updated_at: "2026-05-04T00:00:00Z",
+          message_count: 4,
+          active_documents: [],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+      }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Question")).toBeInTheDocument();
+    expect(screen.getByText("Answer")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Mở menu tin nhắn người dùng" })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Xóa đoạn chat" }));
+
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/v1/conversations/conv-123/messages/m1",
+        expect.objectContaining({ method: "DELETE", credentials: "same-origin" }),
+      ),
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("Question")).not.toBeInTheDocument();
+      expect(screen.queryByText("Answer")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Another question")).toBeInTheDocument();
+    expect(screen.getByText("Another answer")).toBeInTheDocument();
+  });
+
+  it("deletes a freshly sent exchange using the server user message id from SSE", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    const encoder = new TextEncoder();
+
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/conversations/conv-123/messages") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [],
+        } as Response;
+      }
+      if (url === "/api/v1/conversations/conv-123") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "conv-123",
+            title: "Scoped chat",
+            created_at: "2026-05-04T00:00:00Z",
+            updated_at: "2026-05-04T00:00:00Z",
+            message_count: 0,
+            active_documents: [],
+          }),
+        } as Response;
+      }
+      if (url === "/api/v1/chat") {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => {
+              let done = false;
+              return {
+                read: async () => {
+                  if (done) return { done: true, value: undefined };
+                  done = true;
+                  return {
+                    done: false,
+                    value: encoder.encode(
+                      'data: {"type":"chunk","content":"Fresh answer"}\n\n' +
+                        'data: {"type":"done","user_message_id":"srv-user-5","message_id":"srv-assistant-5","conversation_id":"conv-123","active_documents":[]}\n\n',
+                    ),
+                  };
+                },
+              };
+            },
+          },
+        } as Response;
+      }
+      if (url === "/api/v1/conversations/conv-123/messages/srv-user-5") {
+        return { ok: true, status: 204 } as Response;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    const input = screen.getByPlaceholderText(
+      "Ask about your documents. Outside knowledge is off by default.",
+    );
+    fireEvent.change(input, { target: { value: "Fresh question" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("Fresh answer")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Xóa đoạn chat|XÃ³a Ä‘oáº¡n chat/i }));
+
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/v1/conversations/conv-123/messages/srv-user-5",
+        expect.objectContaining({ method: "DELETE", credentials: "same-origin" }),
+      ),
+    );
+  });
+
+  it("edits a user message, deletes the old exchange, and sends the replacement question", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    const encoder = new TextEncoder();
+
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/conversations/conv-123/messages") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([
+            { id: "m1", role: "user", content: "Question" },
+            { id: "m2", role: "assistant", content: "Answer" },
+          ]),
+        } as Response;
+      }
+      if (url === "/api/v1/conversations/conv-123") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "conv-123",
+            title: "Scoped chat",
+            created_at: "2026-05-04T00:00:00Z",
+            updated_at: "2026-05-04T00:00:00Z",
+            message_count: 2,
+            active_documents: [],
+          }),
+        } as Response;
+      }
+      if (url === "/api/v1/chat") {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => {
+              let done = false;
+              return {
+                read: async () => {
+                  if (done) return { done: true, value: undefined };
+                  done = true;
+                  return {
+                    done: false,
+                    value: encoder.encode(
+                      'data: {"type":"chunk","content":"Updated answer"}\n\n' +
+                        'data: {"type":"done","user_message_id":"srv-user-3","message_id":"msg-3","conversation_id":"conv-123","active_documents":[]}\n\n',
+                    ),
+                  };
+                },
+              };
+            },
+          },
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Question")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /gửi lại/i }));
+
+    const input = screen.getByPlaceholderText(
+      "Ask about your documents. Outside knowledge is off by default.",
+    );
+    expect(input).toHaveValue("Question");
+    expect(screen.getByRole("button", { name: "Resend edited message" })).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "Updated question" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const chatCall = vi.mocked(globalThis.fetch).mock.calls.find(
+      ([url]) => String(url) === "/api/v1/chat",
+    );
+    expect(JSON.parse(String(chatCall?.[1]?.body))).toMatchObject({
+      query: "Updated question",
+      conversation_id: "conv-123",
+      replace_message_id: "m1",
+      response_mode: "strict_documents",
+    });
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some(
+        ([url]) => String(url) === "/api/v1/conversations/conv-123/messages/m1",
+      ),
+    ).toBe(false);
+    await waitFor(() => {
+      expect(screen.getByText("Updated question")).toBeInTheDocument();
+      expect(screen.getByText("Updated answer")).toBeInTheDocument();
+    });
+  });
+
+  it("regenerates an assistant answer from the previous user prompt", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    const encoder = new TextEncoder();
+
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/conversations/conv-123/messages") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([
+            { id: "m1", role: "user", content: "Original question" },
+            { id: "m2", role: "assistant", content: "Original answer" },
+          ]),
+        } as Response;
+      }
+      if (url === "/api/v1/conversations/conv-123") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "conv-123",
+            title: "Scoped chat",
+            created_at: "2026-05-04T00:00:00Z",
+            updated_at: "2026-05-04T00:00:00Z",
+            message_count: 2,
+            active_documents: [],
+          }),
+        } as Response;
+      }
+      if (url === "/api/v1/chat") {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => {
+              let done = false;
+              return {
+                read: async () => {
+                  if (done) return { done: true, value: undefined };
+                  done = true;
+                  return {
+                    done: false,
+                    value: encoder.encode(
+                      'data: {"type":"chunk","content":"Regenerated answer"}\n\n' +
+                        'data: {"type":"done","user_message_id":"srv-user-4","message_id":"msg-4","conversation_id":"conv-123","active_documents":[]}\n\n',
+                    ),
+                  };
+                },
+              };
+            },
+          },
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Original answer")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[1]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Tạo lại|Táº¡o láº¡i/i }));
+
+    const input = screen.getByPlaceholderText(
+      "Ask about your documents. Outside knowledge is off by default.",
+    );
+    expect(input).toHaveValue("Original question");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const chatCall = vi.mocked(globalThis.fetch).mock.calls.find(
+      ([url]) => String(url) === "/api/v1/chat",
+    );
+    expect(JSON.parse(String(chatCall?.[1]?.body))).toMatchObject({
+      query: "Original question",
+      conversation_id: "conv-123",
+      replace_message_id: "m2",
+    });
+    expect(await screen.findByText("Regenerated answer")).toBeInTheDocument();
+  });
+
+  it("restores the original exchange when edit-and-resend fails", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/conversations/conv-123/messages") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([
+            { id: "m1", role: "user", content: "Question" },
+            { id: "m2", role: "assistant", content: "Answer" },
+          ]),
+        } as Response;
+      }
+      if (url === "/api/v1/conversations/conv-123") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "conv-123",
+            title: "Scoped chat",
+            created_at: "2026-05-04T00:00:00Z",
+            updated_at: "2026-05-04T00:00:00Z",
+            message_count: 2,
+            active_documents: [],
+          }),
+        } as Response;
+      }
+      if (url === "/api/v1/chat") {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ detail: "Chat request failed" }),
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Question")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /gửi lại/i }));
+
+    const input = screen.getByPlaceholderText(
+      "Ask about your documents. Outside knowledge is off by default.",
+    );
+    fireEvent.change(input, { target: { value: "Updated question" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("Question")).toBeInTheDocument();
+    expect(screen.getByText("Answer")).toBeInTheDocument();
+    expect(screen.getByText(/Message action failed:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Chat request failed/i)).toBeInTheDocument();
+    expect(input).toHaveValue("Updated question");
+  });
+
+  it("cancels edit mode and clears the composer draft", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ([
+          { id: "m1", role: "user", content: "Question" },
+          { id: "m2", role: "assistant", content: "Answer" },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "conv-123",
+          title: "Scoped chat",
+          created_at: "2026-05-04T00:00:00Z",
+          updated_at: "2026-05-04T00:00:00Z",
+          message_count: 2,
+          active_documents: [],
+        }),
+      }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Question")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /gửi lại/i }));
+
+    const input = screen.getByPlaceholderText(
+      "Ask about your documents. Outside knowledge is off by default.",
+    );
+    expect(input).toHaveValue("Question");
+
+    fireEvent.click(screen.getByRole("button", { name: /Hủy|Há»§y/i }));
+
+    expect(screen.queryByRole("button", { name: "Resend edited message" })).not.toBeInTheDocument();
+    expect(input).toHaveValue("");
+  });
+
+  it("copies an assistant answer and shows a local success notice", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <MessageBubble
+        message={{ id: "2", role: "assistant", content: "Answer [1]" }}
+        onCitationClick={vi.fn()}
+        onCopy={async (content) => {
+          await navigator.clipboard.writeText(content);
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /menu tin/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Sao chép|Sao chÃ©p/i }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Answer [1]"));
+  });
+
+  it("shows a message-action error when copying fails", async () => {
+    searchParams = new URLSearchParams("conversationId=conv-123");
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard denied"));
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ([
+          { id: "m1", role: "user", content: "Question" },
+          { id: "m2", role: "assistant", content: "Answer" },
+        ]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "conv-123",
+          title: "Scoped chat",
+          created_at: "2026-05-04T00:00:00Z",
+          updated_at: "2026-05-04T00:00:00Z",
+          message_count: 2,
+          active_documents: [],
+        }),
+      }) as unknown as typeof fetch;
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("Answer")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /menu tin/i })[1]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Sao chép|Sao chÃ©p/i }));
+
+    expect(await screen.findByText(/Message action failed:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Clipboard denied/i)).toBeInTheDocument();
   });
 });

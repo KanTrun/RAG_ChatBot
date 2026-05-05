@@ -13,18 +13,52 @@ interface Message {
 interface ChatMessageListProps {
   messages: Message[];
   onCitationClick: (num: number, sources?: any[]) => void;
+  onDeleteMessage?: (messageId: string) => void;
+  onEditMessage?: (messageId: string, content: string) => void;
+  onRegenerateMessage?: (messageId: string) => void;
+  onCopyMessage?: (content: string) => void;
+  deleteDisabled?: boolean;
 }
 
-export function ChatMessageList({ messages, onCitationClick }: ChatMessageListProps) {
+export function ChatMessageList({
+  messages,
+  onCitationClick,
+  onDeleteMessage,
+  onEditMessage,
+  onRegenerateMessage,
+  onCopyMessage,
+  deleteDisabled = false,
+}: ChatMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
+  const previousSnapshot = useRef({
+    count: 0,
+    lastId: null as string | null,
+    lastContentLength: 0,
+  });
 
-  // Auto-scroll to bottom on new messages (unless user scrolled up)
   useEffect(() => {
-    if (!userScrolledUp.current && typeof bottomRef.current?.scrollIntoView === "function") {
+    const lastMessage = messages[messages.length - 1];
+    const countIncreased = messages.length > previousSnapshot.current.count;
+    const streamingExpanded =
+      Boolean(lastMessage) &&
+      previousSnapshot.current.lastId === lastMessage?.id &&
+      (lastMessage?.content.length || 0) > previousSnapshot.current.lastContentLength;
+
+    if (
+      !userScrolledUp.current &&
+      (countIncreased || streamingExpanded) &&
+      typeof bottomRef.current?.scrollIntoView === "function"
+    ) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
+
+    previousSnapshot.current = {
+      count: messages.length,
+      lastId: lastMessage?.id || null,
+      lastContentLength: lastMessage?.content.length || 0,
+    };
   }, [messages]);
 
   function handleScroll() {
@@ -48,6 +82,11 @@ export function ChatMessageList({ messages, onCitationClick }: ChatMessageListPr
             key={msg.id}
             message={msg}
             onCitationClick={onCitationClick}
+            onDelete={onDeleteMessage}
+            onEditAndResend={onEditMessage}
+            onRegenerate={onRegenerateMessage}
+            onCopy={onCopyMessage}
+            deleteDisabled={deleteDisabled}
           />
         ))}
         <div ref={bottomRef} />

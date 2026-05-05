@@ -4,6 +4,7 @@ from pathlib import Path
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentStatus
@@ -42,6 +43,13 @@ async def test_list_conversations_returns_owned_conversations(
 ):
     conversation = Conversation(user_id=test_user.id, title="AlphaProject")
     db_session.add(conversation)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Message(conversation_id=conversation.id, role=MessageRole.user, content="Question"),
+            Message(conversation_id=conversation.id, role=MessageRole.assistant, content="Answer"),
+        ]
+    )
     await db_session.commit()
 
     response = await async_client.get("/api/v1/conversations", headers=auth_headers)
@@ -50,6 +58,7 @@ async def test_list_conversations_returns_owned_conversations(
     data = response.json()
     assert data["total"] == 1
     assert data["items"][0]["title"] == "AlphaProject"
+    assert data["items"][0]["message_count"] == 2
 
 
 @pytest.mark.anyio
@@ -277,6 +286,116 @@ async def test_chat_endpoint_abstains_in_strict_mode_when_support_is_weak(
     ]
     assert events[0]["type"] == "chunk"
     assert "could not find enough support" in events[0]["content"]
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.anyio
+async def test_chat_endpoint_blocks_hybrid_fallback_for_document_targeted_queries(
+    async_client,
+    auth_headers,
+    indexed_document,
+    monkeypatch,
+):
+    from app.api.v1 import chat_router
+
+    class StreamingProvider:
+        async def generate(self, *_args, **_kwargs):
+            return "unused"
+
+        async def generate_stream(self, *_args, **_kwargs):
+            yield "This should never stream"
+
+    async def fake_retrieve(*args, **kwargs):
+        return RetrievalResult(
+            context=AssembledContext(
+                context_text="",
+                sources=[],
+                total_tokens=0,
+                diagnostics={"low_support_reason": "missing grounded support"},
+            ),
+            query_used="What skills are listed in this CV?",
+            low_confidence=True,
+            candidate_count=0,
+        )
+
+    monkeypatch.setattr(chat_router, "ensure_chat_providers_configured", lambda: None)
+    monkeypatch.setattr(chat_router, "get_llm_provider", lambda: StreamingProvider())
+    monkeypatch.setattr(chat_router.RetrievalService, "retrieve", fake_retrieve)
+
+    response = await async_client.post(
+        "/api/v1/chat",
+        headers=auth_headers,
+        json={
+            "query": "What skills are listed in this CV?",
+            "response_mode": "hybrid_general",
+            "document_ids": [str(indexed_document.id)],
+        },
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert events[0]["type"] == "chunk"
+    assert "could not find enough support" in events[0]["content"]
+    assert not any("This should never stream" in event.get("content", "") for event in events)
+
+
+@pytest.mark.anyio
+async def test_chat_endpoint_allows_hybrid_general_fallback_for_general_questions_even_with_active_docs(
+    async_client,
+    auth_headers,
+    indexed_document,
+    monkeypatch,
+):
+    from app.api.v1 import chat_router
+
+    class StreamingProvider:
+        async def generate(self, *_args, **_kwargs):
+            return "unused"
+
+        async def generate_stream(self, *_args, **_kwargs):
+            yield "Caching stores data so repeated requests do less work."
+
+    async def fake_retrieve(*args, **kwargs):
+        return RetrievalResult(
+            context=AssembledContext(
+                context_text="",
+                sources=[],
+                total_tokens=0,
+                diagnostics={"low_support_reason": "no grounded support"},
+            ),
+            query_used="How does caching work?",
+            low_confidence=True,
+            candidate_count=0,
+        )
+
+    monkeypatch.setattr(chat_router, "ensure_chat_providers_configured", lambda: None)
+    monkeypatch.setattr(chat_router, "get_llm_provider", lambda: StreamingProvider())
+    monkeypatch.setattr(chat_router.RetrievalService, "retrieve", fake_retrieve)
+
+    response = await async_client.post(
+        "/api/v1/chat",
+        headers=auth_headers,
+        json={
+            "query": "How does caching work?",
+            "response_mode": "hybrid_general",
+            "document_ids": [str(indexed_document.id)],
+        },
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert any(
+        event["type"] == "chunk" and "repeated requests" in event["content"]
+        for event in events
+    )
     assert events[-1]["type"] == "done"
 
 
@@ -602,6 +721,39 @@ async def test_conversation_patch_updates_multiple_active_documents(
 
 
 @pytest.mark.anyio
+async def test_conversation_patch_updates_title_without_resetting_active_documents(
+    async_client,
+    auth_headers,
+    db_session,
+    test_user,
+    indexed_document,
+):
+    conversation = Conversation(
+        user_id=test_user.id,
+        title="Scoped chat",
+        active_document_ids=[indexed_document.id],
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+    await db_session.refresh(conversation)
+
+    response = await async_client.patch(
+        f"/api/v1/conversations/{conversation.id}",
+        headers=auth_headers,
+        json={"title": "Renamed chat"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["title"] == "Renamed chat"
+    assert [document["id"] for document in data["active_documents"]] == [str(indexed_document.id)]
+
+    await db_session.refresh(conversation)
+    assert conversation.title == "Renamed chat"
+    assert conversation.active_document_ids == [indexed_document.id]
+
+
+@pytest.mark.anyio
 async def test_chat_endpoint_reports_selected_pending_document_status(
     async_client,
     auth_headers,
@@ -792,11 +944,15 @@ async def test_chat_sources_event_includes_source_excerpt(
                         chunk_id="chunk-1",
                         score=0.99,
                         excerpt="AlphaProject uses hybrid retrieval.",
+                        parent_block_id="parent-1",
+                        heading_level=2,
+                        ingestion_version="document-first-v2",
                         selection_reason="method evidence from sample-article > Overview",
                         answer_section="method",
                     )
                 ],
                 total_tokens=16,
+                diagnostics={"intent": "factual", "low_support_reason": None},
             ),
             query_used=query,
             low_confidence=False,
@@ -823,6 +979,249 @@ async def test_chat_sources_event_includes_source_excerpt(
     assert sources_event["sources"][0]["excerpt"] == "AlphaProject uses hybrid retrieval."
     assert sources_event["sources"][0]["section_path"] == "sample-article > Overview"
     assert sources_event["sources"][0]["block_type"] == "method"
+    assert sources_event["sources"][0]["parent_block_id"] == "parent-1"
+    assert sources_event["sources"][0]["heading_level"] == 2
+    assert sources_event["sources"][0]["ingestion_version"] == "document-first-v2"
+
+
+@pytest.mark.anyio
+async def test_chat_done_event_includes_diagnostics_for_admin_debug_requests(
+    async_client,
+    admin_headers,
+    test_admin,
+    db_session,
+    monkeypatch,
+):
+    from app.api.v1 import chat_router
+
+    upload_path = Path(__file__).parent / "tmp-uploads" / f"{uuid.uuid4()}-admin-debug.txt"
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    upload_path.write_text("Admin debug document", encoding="utf-8")
+    admin_document = Document(
+        title="Admin Debug Doc",
+        file_name="admin-debug.txt",
+        file_path=str(upload_path),
+        file_type="txt",
+        file_size=32,
+        content_hash="admin-debug-hash",
+        status=DocumentStatus.indexed,
+        owner_id=test_admin.id,
+        total_chunks=1,
+    )
+    db_session.add(admin_document)
+    await db_session.commit()
+    await db_session.refresh(admin_document)
+
+    class StreamingProvider:
+        async def generate(self, *_args, **_kwargs):
+            return "unused"
+
+        async def generate_stream(self, *_args, **_kwargs):
+            yield "Grounded answer with evidence [1]"
+
+    async def fake_retrieve(self, query, user_id, user_role_ids, filters=None, **kwargs):
+        return RetrievalResult(
+            context=AssembledContext(
+                context_text="[1] Source: sample-article\nAlphaProject uses hybrid retrieval.\n",
+                sources=[
+                    SourceReference(
+                        citation_number=1,
+                        document_title="sample-article",
+                        file_name="sample-article.txt",
+                        page_number=1,
+                        section="Overview",
+                        chunk_id="chunk-1",
+                        score=0.99,
+                    )
+                ],
+                total_tokens=16,
+                diagnostics={
+                    "intent": "factual",
+                    "selected_query_variants": ["primary", "factual_method"],
+                    "low_support_reason": None,
+                },
+            ),
+            query_used=query,
+            low_confidence=False,
+            candidate_count=1,
+        )
+
+    monkeypatch.setattr(chat_router, "ensure_chat_providers_configured", lambda: None)
+    monkeypatch.setattr(chat_router, "get_llm_provider", lambda: StreamingProvider())
+    monkeypatch.setattr(chat_router.RetrievalService, "retrieve", fake_retrieve)
+
+    response = await async_client.post(
+        "/api/v1/chat",
+        headers=admin_headers,
+        json={
+            "query": "Explain the retrieval method",
+            "response_mode": "hybrid_general",
+            "include_diagnostics": True,
+            "document_ids": [str(admin_document.id)],
+        },
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    done_event = next(event for event in events if event["type"] == "done")
+    assert done_event["diagnostics"]["intent"] == "factual"
+    assert done_event["diagnostics"]["selected_query_variants"] == ["primary", "factual_method"]
+    assert done_event["diagnostics"]["document_target_required"] is True
+    assert done_event["diagnostics"]["query_classification"] == "document-targeted"
+    assert done_event["diagnostics"]["outside_knowledge_blocked_reason"] is not None
+
+
+@pytest.mark.anyio
+async def test_delete_conversation_hard_deletes_messages(
+    async_client,
+    auth_headers,
+    db_session,
+    test_user,
+):
+    conversation = Conversation(user_id=test_user.id, title="Delete me")
+    db_session.add(conversation)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Message(conversation_id=conversation.id, role=MessageRole.user, content="Question"),
+            Message(conversation_id=conversation.id, role=MessageRole.assistant, content="Answer"),
+        ]
+    )
+    await db_session.commit()
+
+    response = await async_client.delete(
+        f"/api/v1/conversations/{conversation.id}",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 204
+    remaining_conversation = await db_session.execute(
+        select(Conversation).where(Conversation.id == conversation.id)
+    )
+    assert remaining_conversation.scalar_one_or_none() is None
+    remaining = await db_session.execute(
+        select(Message).where(Message.conversation_id == conversation.id)
+    )
+    assert remaining.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_delete_conversation_message_pair_keeps_history_coherent(
+    async_client,
+    auth_headers,
+    db_session,
+    test_user,
+):
+    conversation = Conversation(user_id=test_user.id, title="Delete pair")
+    db_session.add(conversation)
+    await db_session.flush()
+    first_user = Message(conversation_id=conversation.id, role=MessageRole.user, content="Question one")
+    first_assistant = Message(
+        conversation_id=conversation.id,
+        role=MessageRole.assistant,
+        content="Answer one",
+    )
+    second_user = Message(conversation_id=conversation.id, role=MessageRole.user, content="Question two")
+    second_assistant = Message(
+        conversation_id=conversation.id,
+        role=MessageRole.assistant,
+        content="Answer two",
+    )
+    db_session.add_all([first_user, first_assistant, second_user, second_assistant])
+    await db_session.commit()
+
+    first_response = await async_client.delete(
+        f"/api/v1/conversations/{conversation.id}/messages/{first_user.id}",
+        headers=auth_headers,
+    )
+
+    assert first_response.status_code == 204
+    first_remaining = await async_client.get(
+        f"/api/v1/conversations/{conversation.id}/messages",
+        headers=auth_headers,
+    )
+    assert [item["content"] for item in first_remaining.json()] == ["Question two", "Answer two"]
+
+    second_response = await async_client.delete(
+        f"/api/v1/conversations/{conversation.id}/messages/{second_assistant.id}",
+        headers=auth_headers,
+    )
+
+    assert second_response.status_code == 204
+    second_remaining = await async_client.get(
+        f"/api/v1/conversations/{conversation.id}/messages",
+        headers=auth_headers,
+    )
+    assert second_remaining.json() == []
+
+
+@pytest.mark.anyio
+async def test_chat_endpoint_replaces_an_existing_exchange_after_successful_resend(
+    async_client,
+    auth_headers,
+    db_session,
+    test_user,
+    monkeypatch,
+):
+    from app.api.v1 import chat_router
+
+    conversation = Conversation(user_id=test_user.id, title="Replace exchange")
+    db_session.add(conversation)
+    await db_session.flush()
+    original_user = Message(
+        conversation_id=conversation.id,
+        role=MessageRole.user,
+        content="Original question",
+    )
+    original_assistant = Message(
+        conversation_id=conversation.id,
+        role=MessageRole.assistant,
+        content="Original answer",
+    )
+    db_session.add_all([original_user, original_assistant])
+    await db_session.commit()
+
+    class StreamingProvider:
+        async def generate(self, *_args, **_kwargs):
+            return "unused"
+
+        async def generate_stream(self, *_args, **_kwargs):
+            yield "Replacement answer"
+
+    monkeypatch.setattr(chat_router, "ensure_chat_providers_configured", lambda: None)
+    monkeypatch.setattr(chat_router, "get_llm_provider", lambda: StreamingProvider())
+
+    response = await async_client.post(
+        "/api/v1/chat",
+        headers=auth_headers,
+        json={
+            "query": "Updated question",
+            "conversation_id": str(conversation.id),
+            "replace_message_id": str(original_assistant.id),
+            "response_mode": "hybrid_general",
+        },
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    done_event = next(event for event in events if event["type"] == "done")
+    assert done_event["user_message_id"]
+    assert done_event["message_id"]
+
+    remaining = await async_client.get(
+        f"/api/v1/conversations/{conversation.id}/messages",
+        headers=auth_headers,
+    )
+    contents = [item["content"] for item in remaining.json()]
+    assert contents == ["Updated question", "Replacement answer"]
 
 
 def test_chat_provider_config_accepts_ollama_without_openai_key(monkeypatch):
@@ -837,6 +1236,38 @@ def test_chat_provider_config_accepts_ollama_without_openai_key(monkeypatch):
     app_config._settings = None
 
     ensure_chat_providers_configured()
+
+
+def test_chat_provider_config_accepts_gemini_with_local_env(monkeypatch):
+    import app.config as app_config
+    from app.api.v1.chat_router import ensure_chat_providers_configured
+
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
+    monkeypatch.setenv("GEMINI_API_KEY", "local-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    app_config._settings = None
+
+    ensure_chat_providers_configured()
+
+
+def test_gemini_provider_uses_gemini_model_not_default_llm_model(monkeypatch):
+    import app.config as app_config
+    from app.services.llm.provider_factory import get_llm_provider
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5:7b")
+    monkeypatch.setenv("GEMINI_API_KEY", "local-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    app_config._settings = None
+    get_llm_provider.cache_clear()
+
+    provider = get_llm_provider(provider="gemini")
+
+    assert getattr(provider, "default_model") == "gemini-2.5-pro"
+    get_llm_provider.cache_clear()
 
 
 @pytest.mark.integration

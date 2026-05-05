@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_pagination, require_role
@@ -15,10 +15,19 @@ from app.models.chunk import DocumentChunk
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentStatus
 from app.models.message import Message
-from app.schemas.admin_schemas import IngestionJobStatus, SystemStats
+from app.schemas.admin_schemas import (
+    BulkReindexResponse,
+    DocumentIndexDiagnosticsResponse,
+    DocumentOutlineBlock,
+    IndexedChunkDebug,
+    IngestionJobStatus,
+    SystemStats,
+)
 from app.schemas.common_schemas import PaginatedResponse, PaginationParams
 from app.schemas.document_schemas import DocumentDetailResponse, DocumentResponse
 from app.services.document_ingestion_dispatcher import dispatch_document_ingestion
+from app.services.document_structure import INGESTION_VERSION, build_semantic_blocks, serialize_semantic_blocks
+from app.services.parser_factory import get_parser
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +152,48 @@ async def reindex_admin_document(
     return doc
 
 
+@router.post("/documents/reindex-all", response_model=BulkReindexResponse)
+async def reindex_all_documents(
+    background_tasks: BackgroundTasks,
+    stale_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_role("admin")),
+):
+    """Queue a full re-index pass, optionally scoped to stale ingestion versions."""
+    base = select(Document)
+    if stale_only:
+        base = base.where(
+            (Document.metadata_.is_(None))
+            | (Document.metadata_["ingestion_version"].astext != INGESTION_VERSION)
+        )
+
+    documents = (await db.execute(base)).scalars().all()
+    if not documents:
+        return BulkReindexResponse(
+            queued_documents=0,
+            stale_only=stale_only,
+            ingestion_version=INGESTION_VERSION,
+        )
+
+    document_ids = [document.id for document in documents]
+    await db.execute(
+        update(Document)
+        .where(Document.id.in_(document_ids))
+        .values(status=DocumentStatus.pending, error_message=None)
+    )
+    await db.commit()
+
+    for document_id in document_ids:
+        dispatch_document_ingestion(document_id, background_tasks.add_task)
+
+    logger.info("Admin bulk re-index queued for %s documents", len(document_ids))
+    return BulkReindexResponse(
+        queued_documents=len(document_ids),
+        stale_only=stale_only,
+        ingestion_version=INGESTION_VERSION,
+    )
+
+
 @router.get("/ingestion-status", response_model=list[IngestionJobStatus])
 async def get_ingestion_status(
     db: AsyncSession = Depends(get_db),
@@ -175,3 +226,54 @@ async def get_ingestion_status(
         )
         for doc in result.scalars().all()
     ]
+
+
+@router.get("/documents/{document_id}/debug-index", response_model=DocumentIndexDiagnosticsResponse)
+async def get_document_index_debug(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_role("admin")),
+):
+    """Inspect parse outline and indexed chunk metadata for one document."""
+    doc = await db.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    parser = get_parser(doc.file_path)
+    pages = parser.parse(doc.file_path)
+    blocks = build_semantic_blocks(pages)
+    indexed_chunks = (
+        await db.execute(
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id == document_id)
+            .order_by(DocumentChunk.chunk_index)
+        )
+    ).scalars().all()
+
+    return DocumentIndexDiagnosticsResponse(
+        document_id=doc.id,
+        title=doc.title,
+        file_name=doc.file_name,
+        status=doc.status.value,
+        ingestion_version=(doc.metadata_ or {}).get("ingestion_version"),
+        parsed_outline=[
+            DocumentOutlineBlock.model_validate(item)
+            for item in serialize_semantic_blocks(blocks)
+        ],
+        indexed_chunks=[
+            IndexedChunkDebug(
+                chunk_id=chunk.id,
+                chunk_index=chunk.chunk_index,
+                page_number=chunk.page_number,
+                section=chunk.section,
+                block_type=(chunk.metadata_ or {}).get("block_type"),
+                section_path=(chunk.metadata_ or {}).get("section_path"),
+                parent_block_id=(chunk.metadata_ or {}).get("parent_block_id"),
+                heading_level=(chunk.metadata_ or {}).get("heading_level"),
+                ingestion_version=(chunk.metadata_ or {}).get("ingestion_version"),
+                contextualized_text=(chunk.metadata_ or {}).get("contextualized_text"),
+                selection_reason=(chunk.metadata_ or {}).get("selection_reason"),
+            )
+            for chunk in indexed_chunks
+        ],
+    )

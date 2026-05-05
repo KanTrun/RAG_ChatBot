@@ -28,8 +28,12 @@ class SourceReference:
     excerpt: str | None = None
     page_start: int | None = None
     page_end: int | None = None
+    parent_block_id: str | None = None
+    heading_level: int | None = None
+    ingestion_version: str | None = None
     selection_reason: str | None = None
     answer_section: str | None = None
+    coverage_labels: list[str] | None = None
 
 
 @dataclass
@@ -133,8 +137,12 @@ class ContextAssembler:
                             excerpt=self._build_excerpt(chunk.content),
                             page_start=page_start,
                             page_end=page_end,
+                            parent_block_id=meta.get("parent_block_id"),
+                            heading_level=meta.get("heading_level"),
+                            ingestion_version=meta.get("ingestion_version"),
                             selection_reason=meta.get("selection_reason"),
                             answer_section=meta.get("answer_section"),
+                            coverage_labels=meta.get("coverage_labels"),
                         )
                     )
                 break
@@ -155,8 +163,12 @@ class ContextAssembler:
                     excerpt=self._build_excerpt(chunk.content),
                     page_start=page_start,
                     page_end=page_end,
+                    parent_block_id=meta.get("parent_block_id"),
+                    heading_level=meta.get("heading_level"),
+                    ingestion_version=meta.get("ingestion_version"),
                     selection_reason=meta.get("selection_reason"),
                     answer_section=meta.get("answer_section"),
+                    coverage_labels=meta.get("coverage_labels"),
                 )
             )
 

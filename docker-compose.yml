@@ -101,11 +101,11 @@ services:
       DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
       REDIS_URL: redis://redis:6379/0
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
-      EMBEDDING_PROVIDER: ollama
-      LLM_PROVIDER: ollama
-      LLM_MODEL: qwen2.5:7b
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_EMBEDDING_MODEL: mxbai-embed-large
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-mxbai-embed-large}
       INGESTION_DISPATCH_MODE: ${INGESTION_DISPATCH_MODE:-auto}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
@@ -142,11 +142,11 @@ services:
       DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
       REDIS_URL: redis://redis:6379/0
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
-      EMBEDDING_PROVIDER: ollama
-      LLM_PROVIDER: ollama
-      LLM_MODEL: qwen2.5:7b
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_EMBEDDING_MODEL: mxbai-embed-large
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-mxbai-embed-large}
     depends_on:
       migrate:
         condition: service_completed_successfully

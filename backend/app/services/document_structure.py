@@ -27,7 +27,18 @@ _BLOCK_TYPE_MARKERS: dict[str, tuple[str, ...]] = {
         "objective",
         "scope",
     ),
-    "method": ("method", "methodology", "approach", "phuong phap", "phương pháp"),
+    "method": (
+        "method",
+        "methodology",
+        "approach",
+        "phuong phap",
+        "phương pháp",
+        "model",
+        "mo hinh",
+        "mô hình",
+        "algorithm",
+        "technique",
+    ),
     "results": (
         "result",
         "evaluation",
@@ -37,6 +48,7 @@ _BLOCK_TYPE_MARKERS: dict[str, tuple[str, ...]] = {
         "kết quả",
         "danh gia",
         "đánh giá",
+        "finding",
     ),
     "conclusion": ("conclusion", "ket luan", "kết luận", "closing", "future work"),
     "acknowledgement": ("acknowledg", "loi cam on", "lời cảm ơn", "thanks"),
@@ -163,6 +175,25 @@ def build_contextualized_chunk_text(content: str, metadata: dict) -> str:
     context_lines.append("Chunk text:")
     context_lines.append(content.strip())
     return "\n".join(context_lines)
+
+
+def serialize_semantic_blocks(blocks: list[SemanticBlock]) -> list[dict]:
+    """Return a JSON-friendly representation for diagnostics/admin tools."""
+    serialized: list[dict] = []
+    for block in blocks:
+        serialized.append(
+            {
+                "block_id": block.block_id,
+                "parent_block_id": block.parent_block_id,
+                "section_path": " > ".join(block.section_path),
+                "block_type": block.block_type,
+                "heading_level": block.heading_level,
+                "page_start": block.page_start,
+                "page_end": block.page_end,
+                "preview_text": " ".join(block.text.split())[:320],
+            }
+        )
+    return serialized
 
 
 def detect_block_type(

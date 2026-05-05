@@ -16,12 +16,15 @@ class ChatResponseMode(str, Enum):
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     conversation_id: UUID | None = None
+    replace_message_id: UUID | None = None
     document_ids: list[UUID] | None = None
     response_mode: ChatResponseMode = ChatResponseMode.strict_documents
+    include_diagnostics: bool = False
 
 
 class ConversationUpdateRequest(BaseModel):
-    document_ids: list[UUID] = Field(default_factory=list)
+    title: str | None = None
+    document_ids: list[UUID] | None = None
 
 
 class ActiveDocumentResponse(BaseModel):
@@ -38,9 +41,11 @@ class ChatStreamEvent(BaseModel):
     type: Literal["chunk", "sources", "done", "error"]
     content: str | None = None
     sources: list[dict] | None = None
+    user_message_id: UUID | None = None
     message_id: UUID | None = None
     conversation_id: UUID | None = None
     active_documents: list[ActiveDocumentResponse] | None = None
+    diagnostics: dict | None = None
 
 
 class ConversationResponse(BaseModel):

@@ -41,9 +41,11 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:7b"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-pro"
 
     # Reranker
-    reranker_provider: str = "none"  # "bge-reranker" or "none"
+    reranker_provider: str = "bge-reranker"  # "bge-reranker" or "none"
     bge_reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Auth

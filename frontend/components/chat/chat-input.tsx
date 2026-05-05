@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Send, Paperclip } from "lucide-react";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { apiUpload, getApiErrorMessage } from "@/lib/client-api";
@@ -18,6 +18,10 @@ interface ChatInputProps {
   onUploadStatusChange?: (document: UploadedDocument) => void;
   responseMode: ChatResponseMode;
   onResponseModeChange: (responseMode: ChatResponseMode) => void;
+  draftValue?: string;
+  onDraftValueChange?: (value: string) => void;
+  editLabel?: string | null;
+  onCancelEdit?: () => void;
 }
 
 interface ChatUpload {
@@ -34,11 +38,30 @@ export function ChatInput({
   onUploadStatusChange,
   responseMode,
   onResponseModeChange,
+  draftValue,
+  onDraftValueChange,
+  editLabel,
+  onCancelEdit,
 }: ChatInputProps) {
-  const [value, setValue] = useState("");
+  const [localValue, setLocalValue] = useState("");
   const [uploads, setUploads] = useState<ChatUpload[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isControlled = typeof draftValue === "string" && typeof onDraftValueChange === "function";
+  const value = isControlled ? draftValue : localValue;
+  const setValue = isControlled ? onDraftValueChange : setLocalValue;
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [value]);
+
+  useEffect(() => {
+    if (!editLabel) return;
+    textareaRef.current?.focus();
+  }, [editLabel]);
 
   const handleSubmit = useCallback(() => {
     if (!value.trim() || disabled) return;
@@ -122,6 +145,23 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border-primary bg-surface-primary px-4 py-3">
+      {editLabel && (
+        <div className="mx-auto mb-2 flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-accent-primary/20 bg-accent-primary/10 px-3 py-2 text-sm text-content-primary">
+          <div>
+            <p className="font-medium">{editLabel}</p>
+            <p className="text-xs text-content-secondary">
+              Gửi lại sẽ thay thế đoạn chat cũ bằng câu hỏi mới.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelEdit}
+            className="rounded-xl border border-border-primary px-3 py-2 text-xs font-medium text-content-secondary transition-colors hover:bg-surface-tertiary hover:text-content-primary"
+          >
+            Hủy
+          </button>
+        </div>
+      )}
       <div className="mx-auto mb-2 flex max-w-3xl items-center justify-between gap-3 rounded-2xl border border-border-primary bg-surface-secondary/80 px-3 py-2">
         <div className="flex items-center gap-2">
           <button
@@ -198,7 +238,7 @@ export function ChatInput({
           onClick={handleSubmit}
           disabled={!value.trim() || disabled}
           className="mb-0.5 rounded-xl bg-linear-to-br from-accent-primary via-accent-secondary to-accent-primary-hover p-2 text-white shadow-[0_12px_30px_rgba(99,102,241,0.28)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(99,102,241,0.34)] disabled:translate-y-0 disabled:opacity-30"
-          aria-label="Send message"
+          aria-label={editLabel ? "Resend edited message" : "Send message"}
         >
           <Send className="h-4 w-4" />
         </button>

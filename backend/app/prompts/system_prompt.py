@@ -17,7 +17,9 @@ Follow these rules:
 12. If the document only partially answers the question, clearly separate what is supported from what is not supported.
 13. If an evidence brief is provided, use it as the answer map before reading the raw context.
 14. For summary requests, default to: topic, objective/problem, method, results/contributions, limitations/scope.
-15. If a summary slot lacks evidence, say that the document does not provide enough evidence for that slot."""
+15. If a summary slot lacks evidence, say that the document does not provide enough evidence for that slot.
+16. For structured document requests such as resumes, forms, contracts, manuals, reports, or profiles, organize the answer by supported sections or fields only.
+17. If a requested field, clause, step, date, entity, or section lacks direct support in the evidence brief or context, explicitly say that the document does not provide enough evidence for it."""
 
 HYBRID_SYSTEM_PROMPT = """You are a fast, helpful AI assistant in a hybrid RAG system.
 

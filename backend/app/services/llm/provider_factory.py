@@ -17,21 +17,25 @@ def get_llm_provider(
     """Return a cached LLM provider instance based on config."""
     settings = get_settings()
     provider = provider or settings.llm_provider
-    model = model or settings.llm_model
 
     if provider == "openai":
         from app.services.llm.openai_provider import OpenAIProvider
 
-        return OpenAIProvider(model=model)
+        return OpenAIProvider(model=model or settings.llm_model)
 
     if provider == "anthropic":
         from app.services.llm.anthropic_provider import AnthropicProvider
 
-        return AnthropicProvider(model=model)
+        return AnthropicProvider(model=model or settings.llm_model)
 
     if provider == "ollama":
         from app.services.llm.ollama_provider import OllamaProvider
 
-        return OllamaProvider(base_url=settings.ollama_base_url, model=model)
+        return OllamaProvider(base_url=settings.ollama_base_url, model=model or settings.llm_model)
+
+    if provider == "gemini":
+        from app.services.llm.gemini_provider import GeminiProvider
+
+        return GeminiProvider(model=model)
 
     raise ValueError(f"Unknown LLM provider: {provider}")

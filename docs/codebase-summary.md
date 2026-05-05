@@ -2,15 +2,15 @@
 
 ## Current State
 
-RAG chatbot scaffold includes backend, frontend, Docker infrastructure, docs, and CI/test coverage. Local Docker runtime, chat auth/runtime behavior, active-document conversation focus, strict document-only default mode, evidence-aligned retrieval, and explicit hybrid follow-up behavior have been validated.
+RAG chatbot scaffold includes backend, frontend, Docker infrastructure, docs, and CI/test coverage. Local Docker runtime, chat auth/runtime behavior, active-document conversation focus, strict document-only default mode, evidence-aligned retrieval, chat-side delete/rename/edit/regenerate controls, grounded answer/source cues, and optional Gemini provider support have been validated.
 
 ## Main Areas
 
 | Area | Path | Status |
 |---|---|---|
-| Backend API | `D:/RAG_Project/backend` | Implemented; chat API supports conversation-scoped active document ids, strict document-only default mode, explicit hybrid mode, original-query-anchored retrieval, and evidence snippets in source payloads |
-| Backend tests | `D:/RAG_Project/backend/tests` | Implemented; latest focused chat/retrieval pytest passed: 29 passed, 2 skipped |
-| Frontend app | `D:/RAG_Project/frontend` | Implemented; build passed; `/register` and `/documents` routes present; `/login` and `/register` now use a premium two-panel auth shell with theme toggle; `/chat` reloads saved conversations, hydrates active document scope, exposes strict-vs-hybrid response mode clearly, and renders scrollable evidence snippets in the Sources panel |
+| Backend API | `D:/RAG_Project/backend` | Implemented; chat API supports conversation-scoped active document ids, strict document-only default mode, explicit hybrid mode, weak-support abstention for document-targeted questions, expanded query-aware retrieval diagnostics, admin-only debug/reindex controls, richer structural source payloads, and optional Gemini provider selection when configured |
+| Backend tests | `D:/RAG_Project/backend/tests` | Implemented; latest backend non-integration pytest passed: 70 passed, 3 deselected |
+| Frontend app | `D:/RAG_Project/frontend` | Implemented; build passed; `/register` and `/documents` routes present; `/login` and `/register` now use a premium two-panel auth shell with theme toggle; `/chat` reloads saved conversations, hydrates active document scope, exposes strict-vs-hybrid response mode clearly, and adds conversation rename/delete plus per-message edit/regenerate/delete actions with grounded answer/source cues in the thread |
 | Frontend tests | `D:/RAG_Project/frontend/__tests__` | Implemented; latest targeted chat Vitest passed: 16/16 |
 | E2E tests | `D:/RAG_Project/frontend/e2e` | Implemented; gated by env |
 | Test services | `D:/RAG_Project/docker-compose.test.yml` | Implemented |
@@ -22,10 +22,10 @@ RAG chatbot scaffold includes backend, frontend, Docker infrastructure, docs, an
 - Browser chat sends requests to `/api/v1/chat` through the shared client wrapper.
 - `frontend/app/api/v1/[...path]/route.ts` proxies `/api/v1/*` to the configured backend URL and attaches `Authorization: Bearer <accessToken>` when a NextAuth session contains `accessToken`.
 - `frontend/lib/auth.ts` stores backend access/refresh tokens, access expiry, roles, and refresh errors in NextAuth JWT/session state.
-- NextAuth refreshes access tokens through `/api/v1/auth/refresh`; refresh failure sets `RefreshAccessTokenError`.
+- NextAuth refreshes access tokens through `/api/v1/auth/refresh`; refresh failure marks the session invalid for protected routes.
 - `frontend/middleware.ts` protects `/chat`, `/documents`, and `/admin`, including redirect on refresh error.
 - `frontend/lib/client-api.ts` handles browser JSON/upload requests, maps common upload/auth/permission errors, and signs out on 401.
-- The Next API proxy protects mutating methods with origin checks: same-origin is allowed, localhost/127.0.0.1 loopback origins are allowed for matching protocol/port development flows, and hostile origins return 403.
+- The Next API proxy protects mutating methods with request-origin checks: same-origin is allowed, localhost/127.0.0.1 loopback origins are allowed for matching protocol/port development flows, and hostile request origins return 403.
 - `frontend/next.config.ts` has no `/api/v1` rewrite, avoiding unauthenticated static proxying.
 - `frontend/components/chat/chat-sidebar.tsx` exposes Chat, My documents, and Admin dashboard navigation in the authenticated shell; Admin link is role-gated; conversation items are route-driven links.
 - Authenticated shells show user email, role badge, and logout.
@@ -35,10 +35,13 @@ RAG chatbot scaffold includes backend, frontend, Docker infrastructure, docs, an
 - `/admin` shows an access-required state for authenticated non-admin users instead of crashing on 403 responses.
 - `/admin` uses `/api/v1/admin/documents`, `/api/v1/admin/stats`, and `/api/v1/admin/ingestion-status` for global system data.
 - `frontend/app/chat/page.tsx` displays backend `detail` errors when available, keeps the active `conversation_id` from chat `done` events for follow-up messages, and reloads saved messages from `/api/v1/conversations/{id}/messages` when a conversation is selected from the sidebar.
+- `frontend/components/chat/chat-sidebar.tsx` now supports conversation rename and permanent delete actions, while `frontend/components/chat/message-bubble.tsx` exposes edit/resend, regenerate, copy, and delete actions per message.
 - `backend/app/api/v1/chat_router.py` now persists `active_document_ids` per conversation, exposes `GET /api/v1/conversations/{id}` and `PATCH /api/v1/conversations/{id}`, and filters retrieval to the active document set when present.
-- `backend/app/api/v1/chat_router.py` now also enforces `strict_documents` as the default response mode, returns an abstention when support is weak, and only enables outside knowledge through explicit `hybrid_general`.
-- `backend/app/api/v1/chat_router.py` now keeps the original user question as the primary retrieval query, passes rewritten query only as auxiliary recall, emits source excerpts, and uses a larger structured-answer generation config for grounded replies.
-- `frontend/app/chat/page.tsx` hydrates active documents from either conversation metadata or `documentIds` query params, keeps that scope visible through `ActiveDocumentContextBar`, and syncs scoped-document changes back to the backend in sequence to avoid stale overwrite races.
+- `backend/app/api/v1/chat_router.py` now enforces `strict_documents` as the default response mode, returns an abstention when support is weak, and only enables outside knowledge through explicit `hybrid_general`.
+- `backend/app/api/v1/chat_router.py` keeps the original user question as the primary retrieval query, passes rewritten query only as auxiliary recall, emits source excerpts, and uses a larger structured-answer generation config for grounded replies.
+- `backend/app/services/retrieval_service.py` now builds answer briefs from grounded evidence, generic support maps, and conditional exhaustive coverage fallback so the composer stays aligned with supported sections across many document types.
+- `backend/app/services/llm/gemini_provider.py` is an optional Gemini REST provider; it uses the configured Gemini key and model when Gemini is selected, and streams SSE content into the shared LLM interface.
+- `frontend/app/chat/page.tsx` hydrates active documents from either conversation metadata or `documentIds` query params, keeps that scope visible through the active document context bar, and syncs scoped-document changes back to the backend in sequence to avoid stale overwrite races.
 - `frontend/app/chat/page.tsx` and `frontend/components/chat/chat-input.tsx` expose a visible mode switch so users can tell whether chat is document-only or allowed to use outside knowledge.
 - `frontend/components/chat/sources-panel.tsx` now scrolls correctly and shows section/page plus evidence snippets so users can inspect why a grounded answer was produced.
 - `frontend/app/chat/page.tsx` and the authenticated chat/documents layouts intentionally defer their full interactive shells until mount, reducing hydration mismatch noise when browser extensions mutate server HTML before React hydrates.
@@ -49,14 +52,19 @@ RAG chatbot scaffold includes backend, frontend, Docker infrastructure, docs, an
 - `backend/app/services/retrieval_service.py` filters retrieval candidates by `documents.owner_id`, keeping chat knowledge base user-scoped.
 - `backend/app/services/retrieval_service.py` uses SQLAlchemy-safe `CAST(:param AS ...)` syntax for pgvector and UUID array binds.
 - `backend/app/api/v1/chat_router.py` checks configured chat providers before streaming and returns HTTP 503 with missing env keys when required provider credentials are absent for document-backed questions.
-- `backend/app/api/v1/chat_router.py` short-circuits greeting-only messages like `Hi` with a professional canned response before provider/retrieval work.
+- `backend/app/api/v1/chat_router.py` short-circuits greeting-only messages with a professional canned response before provider/retrieval work.
 - `backend/app/api/v1/chat_router.py` returns HTTP 503 with a user-facing retrieval-unavailable message when embedding/retrieval dependencies fail before SSE streaming starts.
 - Backend chat SSE logs stream exceptions server-side and sends a generic stream failure event to clients instead of raw exception text.
 - Backend chat SSE `done` events include `conversation_id`.
 - Backend chat SSE `done` events also include the authoritative `active_documents` payload used by the frontend to keep conversation scope consistent.
 - `backend/app/services/retrieval_service.py` now normalizes both list and stringified pgvector embeddings during deduplication so runtime multi-document retrieval does not silently fall back to general chat.
-- `backend/app/services/retrieval_intent_service.py` now classifies summary/compare/extract/question queries into retrieval plans, and parser metadata now preserves more section structure for `pdf`, `html`, `txt`, and `md`.
+- `backend/app/services/retrieval_intent_service.py` now classifies summary/compare/extract/factual/definition/multi-hop queries into retrieval plans, and parser metadata now preserves more section structure for `pdf`, `html`, `txt`, and `md`.
+- `backend/app/services/retrieval_intent_service.py`, `backend/app/services/evidence_clusterer.py`, `backend/app/services/answer_brief_builder.py`, and `backend/app/services/retrieval_section_policy.py` now bias retrieval from question intent and evidence coverage first, then apply CV/profile help only as an adapter; exhaustive prompts can broaden coverage across manuals, reports, resumes, and other structured documents.
+- `backend/app/api/v1/chat_router.py` now blocks hybrid outside-knowledge fallback for document-targeted questions when grounded support is weak, and it exposes that routing decision in admin diagnostics.
+- `backend/app/api/v1/chat_router.py` also now supports hard delete for conversations plus logical pair delete for conversation messages.
+- `backend/app/api/v1/admin_router.py` now exposes admin-only bulk reindex and `debug-index` diagnostics so operators can inspect parsed outlines, block typing, and contextualized chunk text after indexing.
 - `backend/app/services/reranking_service.py` now falls back to lexical question-aware ranking when the cross-encoder reranker is disabled, which matters in the current default config where `reranker_provider=none`.
+- `frontend/components/chat/chat-sidebar.tsx`, `frontend/components/chat/message-bubble.tsx`, and `frontend/app/chat/page.tsx` now let users permanently delete conversations or revoke a chat exchange without reloading the full thread.
 
 ## Phase 10 Test Coverage Added
 
@@ -96,18 +104,25 @@ Passed:
 - Focused backend auth/document/retrieval tests: 24 passed, 1 deselected.
 - Frontend Vitest after chat UX continuity fix: 22/22.
 - Frontend build.
+- Codebase summary refreshed from `repomix-output.xml` after reviewing the touched chat UX, grounding, retrieval, and Gemini provider paths.
 - `/documents` page builds and is protected by middleware.
 - Standalone frontend smoke on `127.0.0.1:3001`: `/login` renders and `/documents` redirects unauthenticated to login with no console errors.
 - Docker runtime: backend/frontend/db/redis healthy/up.
 - Unauthenticated `/chat` redirects to login.
 - Browser login with `runtime-check@example.com` / `Password123!` reaches `/chat`.
-- Sending a chat message displays `Chat provider is not configured. Missing: OPENAI_API_KEY` when OpenAI is configured without a key.
-- Hostile `Origin` on the Next API proxy returns 403.
-- Loopback `Origin` passes the Next proxy origin check and unauthenticated backend request receives 401.
+- Sending a chat message displays the provider-missing error when OpenAI is configured without a key.
+- Hostile request origin on the Next API proxy returns 403.
+- Loopback request origin passes the Next proxy origin check and unauthenticated backend request receives 401.
 - `/register` page builds and posts registration through the authenticated API proxy path, then redirects to login.
 - `/admin` as a non-admin displays an access-required message instead of a client-side exception.
 - Chat history selection reloads saved messages, upload acknowledgment appears in-thread, and greeting-only chat requests return professional copy.
 - Browser smoke on `localhost:3002/chat` after the latest fixes showed no console hydration warnings or favicon errors; a document-backed query now surfaces HTTP 503 with `Chat retrieval is temporarily unavailable. Please try again in a moment.` instead of a raw 500.
+- Backend non-integration suite after retrieval diagnostics/reindex upgrade: 70 passed, 3 deselected.
+- Frontend production build after grouped source-panel update: passed.
+- Focused backend chat/retrieval regression after document-targeted grounding and delete actions: 46 passed, 2 skipped.
+- Focused frontend chat regression after conversation/exchange delete actions: 18 passed.
+- Frontend production build after conversation/exchange delete actions: passed.
+- Live CV compatibility follow-up: the stale runtime document `BACKEND ENG_TruongMinhKhang_8320.pdf` was re-indexed from 2 metadata-free chunks to 14 structured chunks under `document-first-v2`, retrieval traces for the affected conversation flipped from low-support to grounded, and the refreshed `localhost:3001` chat UI showed both sidebar conversation deletion and in-thread exchange deletion controls.
 
 Pending:
 - Provider-backed integration tests with real provider credentials.

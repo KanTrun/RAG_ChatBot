@@ -1,5 +1,84 @@
 # Project Changelog
 
+## 2026-05-05 - Chat UX Continuity, CV/Profile Grounding, and Gemini Provider Support
+
+Status: Chat shell, grounding rules, and optional Gemini provider path are aligned with the shipped runtime behavior
+
+Added:
+- Updated the route-driven chat shell, sidebar, and message bubbles so conversation selection, active-document context, upload acknowledgments, and permanent delete actions stay consistent across the UI.
+- Refined retrieval planning so the core path is document-agnostic first, with conditional exhaustive coverage fallback for broad "list all" style questions across many document types.
+- Tightened CV/profile grounding so profile-style queries use profile-oriented retrieval probes and structured answer briefs instead of research-paper assumptions.
+- Added the optional Gemini provider adapter path so Gemini can be selected when configured without changing the default provider flow.
+- Fixed Gemini provider model selection so `LLM_PROVIDER=gemini` now honors `GEMINI_MODEL` instead of the default `LLM_MODEL`.
+- Fixed `hybrid_general` routing so clearly general questions can still use outside knowledge even when active documents are selected.
+- Fixed conversation sidebar listing to aggregate message counts in one query instead of one `count(*)` per row.
+
+Validated:
+- The related chat UX, strict grounding, CV compatibility, and backend/frontend runtime checks were already completed in the follow-up runs recorded below.
+
+Impact:
+- The project docs now reflect the current shipped chat UX and a broader document-grounding strategy without changing the default provider setup.
+
+Unresolved Questions:
+- None.
+
+## 2026-05-05 - Strict Document-Targeted Grounding and Chat Deletion
+
+Status: Local validation complete
+
+Added:
+- Hybrid chat now classifies document-targeted questions and blocks fallback to outside knowledge when the question clearly depends on uploaded document content.
+- Chat diagnostics now expose `query_classification`, `document_target_required`, `classification_reason`, and `outside_knowledge_blocked_reason` for admin debug requests.
+- Conversation API now supports hard delete for whole conversations and logical delete for a user/assistant message pair.
+- Chat sidebar now provides permanent conversation deletion with no-recovery confirmation.
+- Chat message bubbles now provide permanent exchange deletion with in-place state reconciliation and no full conversation reload.
+- CV/profile summary queries now use profile-oriented retrieval probes instead of research-paper-only section assumptions.
+
+Fixed:
+- Retrieval low-support detection now treats missing claim-level support from preferred sections as unsupported instead of letting weak evidence slip into hybrid answers.
+- Message ordering for delete/reload paths now stays aligned with logical chat flow instead of using UUID as a tie-breaker.
+- Chat message list auto-scroll now avoids jumping to the bottom when exchanges are deleted.
+- Re-indexed runtime CV document `BACKEND ENG_TruongMinhKhang_8320.pdf`, moving it from stale 2-chunk metadata-free indexing to `document-first-v2` with 14 structured chunks.
+
+Validated:
+- Backend targeted pytest: `backend/tests/test_retrieval.py backend/tests/test_api_chat.py` -> `46 passed, 2 skipped`.
+- Backend chat API regression after CV compatibility follow-up: `23 passed, 1 skipped`.
+- Frontend targeted Vitest: `chat.test.tsx` -> `18 passed`.
+- Frontend production build: passed.
+- Live runtime check on `localhost:3001`: authenticated chat view shows `Delete conversation ...` in the sidebar and `Delete exchange` on message bubbles after refresh.
+
+Impact:
+- CV/document questions no longer get padded with outside knowledge just because hybrid mode is enabled.
+- Users can permanently clean up conversations or revoke a chat exchange without corrupting message history or source-panel state.
+
+Unresolved Questions:
+- None.
+
+## 2026-05-05 - Document-First Retrieval Diagnostics and Full Reindex Controls
+
+Status: Query-aware retrieval expanded, admin debug/reindex tools added, and summary source grouping shipped
+
+Fixed:
+- Expanded `backend/app/services/retrieval_intent_service.py`, `backend/app/services/retrieval_service.py`, `backend/app/services/evidence_clusterer.py`, and `backend/app/services/answer_brief_builder.py` so retrieval now distinguishes factual/definition/multi-hop queries, generates broader query variants, scores parent-section candidates, and builds stricter evidence briefs beyond summary-only mode.
+- Updated `backend/app/api/v1/chat_router.py`, `backend/app/schemas/chat_schemas.py`, `backend/app/services/context_assembler.py`, and `backend/app/services/retrieval_section_policy.py` so admin-only chat diagnostics can be requested at runtime, low-support reasons are explicit, and source payloads now carry `parent_block_id`, `heading_level`, and `ingestion_version`.
+- Updated `backend/app/api/v1/admin_router.py`, `backend/app/schemas/admin_schemas.py`, and `backend/app/services/document_structure.py` so admins can trigger bulk re-indexing and inspect parsed outline plus indexed chunk metadata/contextualized text for any document.
+- Updated `frontend/app/chat/page.tsx` and `frontend/components/chat/sources-panel.tsx` so the Sources panel groups evidence by answer section and exposes richer structural metadata for grounded answers.
+- Added regression coverage in `backend/tests/test_api_admin.py`, `backend/tests/test_api_chat.py`, `backend/tests/test_retrieval.py`, and `frontend/__tests__/chat.test.tsx` for expanded retrieval planning, diagnostics payloads, source metadata, and admin debug/reindex APIs.
+
+Validated:
+- Backend compile check: passed.
+- Backend targeted pytest: `backend/tests/test_api_admin.py backend/tests/test_retrieval.py backend/tests/test_ingestion.py backend/tests/test_api_chat.py` -> `46 passed, 3 skipped`.
+- Backend non-integration suite: `70 passed, 3 deselected`.
+- Frontend targeted Vitest: `16 passed`.
+- Frontend production build: passed.
+
+Notes:
+- Bulk re-index support was implemented but not executed against a live production dataset in this session.
+- Runtime diagnostics are admin-only and opt-in through the chat request flag; standard users do not receive retrieval internals.
+
+Unresolved Questions:
+- Should the frontend expose the new admin debug-index endpoint directly in the admin dashboard, or remain API-only for now?
+
 ## 2026-05-05 - Docker Auto-Port Fallback Fix
 
 Status: Local Docker startup no longer hard-fails on occupied default ports when using raw `docker compose up`

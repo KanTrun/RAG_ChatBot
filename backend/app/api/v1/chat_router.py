@@ -5,14 +5,16 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_pagination
+from app.auth.auth_middleware import is_admin
 from app.dependencies import get_db
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentStatus
@@ -88,6 +90,11 @@ def ensure_chat_providers_configured() -> None:
         missing.append("OPENAI_API_KEY")
     if settings.llm_provider == "anthropic" and not settings.anthropic_api_key:
         missing.append("ANTHROPIC_API_KEY")
+    if settings.llm_provider == "gemini":
+        if not settings.gemini_api_key:
+            missing.append("GEMINI_API_KEY")
+        if not settings.gemini_model:
+            missing.append("GEMINI_MODEL")
 
     if missing:
         unique_missing = ", ".join(sorted(set(missing)))
@@ -121,7 +128,10 @@ async def stream_static_reply(
     conv: Conversation,
     content: str,
     start_time: float,
+    user_message_id: UUID | None = None,
+    replace_messages: list[Message] | None = None,
     active_documents: list[dict] | None = None,
+    diagnostics: dict | None = None,
 ):
     assistant_msg = Message(
         conversation_id=conv.id,
@@ -131,15 +141,21 @@ async def stream_static_reply(
         latency_ms=int((time.time() - start_time) * 1000),
     )
     db.add(assistant_msg)
+    if replace_messages:
+        for message in replace_messages:
+            await db.delete(message)
     await db.commit()
 
     yield f"data: {json.dumps({'type': 'chunk', 'content': content})}\n\n"
     done_payload = {
         "type": "done",
+        "user_message_id": str(user_message_id) if user_message_id else None,
         "message_id": str(assistant_msg.id),
         "conversation_id": str(conv.id),
         "active_documents": active_documents or [],
     }
+    if diagnostics:
+        done_payload["diagnostics"] = diagnostics
     yield f"data: {json.dumps(done_payload)}\n\n"
 
 
@@ -172,6 +188,55 @@ def build_empty_retrieval_result(query: str) -> RetrievalResult:
     )
 
 
+def enrich_chat_diagnostics(diagnostics: dict | None, retrieval_plan) -> dict:
+    enriched = dict(diagnostics or {})
+    enriched.setdefault("intent", retrieval_plan.intent.value)
+    enriched["query_classification"] = retrieval_plan.query_classification
+    enriched["document_target_required"] = retrieval_plan.document_target_required
+    enriched["classification_reason"] = retrieval_plan.classification_reason
+    enriched["outside_knowledge_blocked_reason"] = retrieval_plan.outside_knowledge_blocked_reason
+    return enriched
+
+
+def collect_message_pair_ids(messages: list[Message], target_message_id: UUID) -> set[UUID]:
+    for index, message in enumerate(messages):
+        if message.id != target_message_id:
+            continue
+
+        delete_ids = {message.id}
+        if message.role == MessageRole.user:
+            for next_message in messages[index + 1 :]:
+                if next_message.role == MessageRole.assistant:
+                    delete_ids.add(next_message.id)
+                    break
+                if next_message.role == MessageRole.user:
+                    break
+        elif message.role == MessageRole.assistant:
+            for previous_message in reversed(messages[:index]):
+                if previous_message.role == MessageRole.user:
+                    delete_ids.add(previous_message.id)
+                    break
+                if previous_message.role == MessageRole.assistant:
+                    break
+        return delete_ids
+
+    return set()
+
+
+async def load_conversation_messages(
+    db: AsyncSession,
+    conversation_id: UUID,
+) -> list[Message]:
+    statement = select(Message).where(Message.conversation_id == conversation_id)
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        statement = statement.order_by(Message.created_at, text("ctid"))
+    else:
+        statement = statement.order_by(Message.created_at, Message.id)
+    result = await db.execute(statement)
+    return result.scalars().all()
+
+
 def build_indexing_status_reply(active_document_names: list[str]) -> str:
     if not active_document_names:
         return INDEXING_RESPONSE
@@ -200,16 +265,34 @@ async def build_conversation_response(
     db: AsyncSession,
     conv: Conversation,
 ) -> ConversationResponse:
-    msg_count = await db.execute(select(func.count()).where(Message.conversation_id == conv.id))
+    message_counts = await load_message_counts(db, [conv.id])
     context = await load_active_document_context(db, conv.user_id, conv.active_document_ids or [])
     return ConversationResponse(
         id=conv.id,
         title=conv.title,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
-        message_count=msg_count.scalar() or 0,
+        message_count=message_counts.get(conv.id, 0),
         active_documents=serialize_active_documents(context.documents),
     )
+
+
+async def load_message_counts(
+    db: AsyncSession,
+    conversation_ids: list[UUID],
+) -> dict[UUID, int]:
+    if not conversation_ids:
+        return {}
+
+    rows = await db.execute(
+        select(Message.conversation_id, func.count(Message.id))
+        .where(Message.conversation_id.in_(conversation_ids))
+        .group_by(Message.conversation_id)
+    )
+    return {
+        conversation_id: int(count)
+        for conversation_id, count in rows.all()
+    }
 
 
 def has_grounded_context(result: RetrievalResult) -> bool:
@@ -249,6 +332,16 @@ async def chat(
         db.add(conv)
         await db.flush()
 
+    replace_messages: list[Message] = []
+    if body.replace_message_id:
+        if not body.conversation_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "replace_message_id requires a conversation")
+        replace_candidates = await load_conversation_messages(db, conv.id)
+        replace_ids = collect_message_pair_ids(replace_candidates, body.replace_message_id)
+        if not replace_ids:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found")
+        replace_messages = [message for message in replace_candidates if message.id in replace_ids]
+
     if body.document_ids is not None:
         requested_document_ids = list(dict.fromkeys(body.document_ids))
         active_context = await load_active_document_context(db, user.id, requested_document_ids)
@@ -286,6 +379,8 @@ async def chat(
                 conv,
                 small_talk_reply,
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
             ),
             media_type="text/event-stream",
@@ -301,6 +396,8 @@ async def chat(
                     [document.file_name for document in active_context.pending_documents]
                 ),
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
             ),
             media_type="text/event-stream",
@@ -315,6 +412,8 @@ async def chat(
                     [document.file_name for document in active_context.failed_documents]
                 ),
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
             ),
             media_type="text/event-stream",
@@ -332,12 +431,20 @@ async def chat(
                 conv,
                 INDEXING_RESPONSE,
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
             ),
             media_type="text/event-stream",
         )
 
     strict_mode = body.response_mode == ChatResponseMode.strict_documents
+    include_diagnostics = body.include_diagnostics and is_admin(user)
+    preview_retrieval_plan = build_retrieval_plan(
+        body.query,
+        len(active_context.indexed_documents),
+        has_active_document_scope=bool(active_context.documents),
+    )
     if strict_mode and not has_indexed_documents and not has_active_indexed_documents:
         return StreamingResponse(
             stream_static_reply(
@@ -345,7 +452,17 @@ async def chat(
                 conv,
                 STRICT_NO_DOCUMENTS_RESPONSE,
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
+                diagnostics=(
+                    enrich_chat_diagnostics(
+                        {"low_support_reason": STRICT_NO_DOCUMENTS_RESPONSE},
+                        preview_retrieval_plan,
+                    )
+                    if include_diagnostics
+                    else None
+                ),
             ),
             media_type="text/event-stream",
         )
@@ -356,19 +473,20 @@ async def chat(
     history_result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conv.id)
-        .order_by(Message.created_at)
+        .order_by(Message.created_at, Message.id)
         .limit(10)
     )
+    replace_message_ids = {message.id for message in replace_messages}
     history = [
         {"role": m.role.value, "content": m.content}
         for m in history_result.scalars().all()
-        if m.id != user_msg.id
+        if m.id != user_msg.id and m.id not in replace_message_ids
     ]
 
     llm_provider = get_llm_provider()
     result = build_empty_retrieval_result(body.query)
     active_indexed_document_count = len(active_context.indexed_documents)
-    retrieval_plan = build_retrieval_plan(body.query, active_indexed_document_count)
+    retrieval_plan = preview_retrieval_plan
 
     if has_indexed_documents or has_active_indexed_documents:
         try:
@@ -401,6 +519,7 @@ async def chat(
                 context_max_tokens=retrieval_plan.context_max_tokens,
                 balanced_per_document=retrieval_plan.balanced_per_document,
                 ordered_document_scan=retrieval_plan.ordered_document_scan,
+                query_analysis=retrieval_plan,
             )
         except HTTPException:
             raise
@@ -411,6 +530,8 @@ async def chat(
                 logger.exception("Chat retrieval degraded; continuing with hybrid general mode")
             result = build_empty_retrieval_result(body.query)
 
+    result.context.diagnostics = enrich_chat_diagnostics(result.context.diagnostics, retrieval_plan)
+
     if strict_mode and (result.low_confidence or not has_grounded_context(result)):
         return StreamingResponse(
             stream_static_reply(
@@ -418,13 +539,32 @@ async def chat(
                 conv,
                 STRICT_LOW_SUPPORT_RESPONSE,
                 start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
                 active_documents=active_documents_payload,
+                diagnostics=result.context.diagnostics if include_diagnostics else None,
+            ),
+            media_type="text/event-stream",
+        )
+
+    if retrieval_plan.document_target_required and (result.low_confidence or not has_grounded_context(result)):
+        return StreamingResponse(
+            stream_static_reply(
+                db,
+                conv,
+                STRICT_LOW_SUPPORT_RESPONSE,
+                start_time,
+                user_message_id=user_msg.id,
+                replace_messages=replace_messages,
+                active_documents=active_documents_payload,
+                diagnostics=result.context.diagnostics if include_diagnostics else None,
             ),
             media_type="text/event-stream",
         )
 
     allow_general_answer = (
         body.response_mode == ChatResponseMode.hybrid_general
+        and not retrieval_plan.document_target_required
         and (result.low_confidence or not has_grounded_context(result))
     )
     prompt = GENERAL_ONLY_PROMPT if allow_general_answer else (
@@ -461,10 +601,14 @@ async def chat(
                 "block_type": s.block_type,
                 "page_start": s.page_start,
                 "page_end": s.page_end,
+                "parent_block_id": s.parent_block_id,
+                "heading_level": s.heading_level,
+                "ingestion_version": s.ingestion_version,
                 "score": round(s.score, 4),
                 "excerpt": s.excerpt,
                 "selection_reason": s.selection_reason,
                 "answer_section": s.answer_section,
+                "coverage_labels": s.coverage_labels,
             }
             for s in result.context.sources
         ]
@@ -496,15 +640,20 @@ async def chat(
                 latency_ms=latency_ms,
             )
             db.add(assistant_msg)
+            for message in replace_messages:
+                await db.delete(message)
             await db.commit()
 
             # Done event
             done = {
                 "type": "done",
+                "user_message_id": str(user_msg.id),
                 "message_id": str(assistant_msg.id),
                 "conversation_id": str(conv.id),
                 "active_documents": active_documents_payload,
             }
+            if include_diagnostics:
+                done["diagnostics"] = result.context.diagnostics
             yield f"data: {json.dumps(done)}\n\n"
 
         except Exception:
@@ -519,15 +668,20 @@ async def chat(
                     latency_ms=latency_ms,
                 )
                 db.add(assistant_msg)
+                for message in replace_messages:
+                    await db.delete(message)
                 await db.commit()
 
                 yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
                 done = {
                     "type": "done",
+                    "user_message_id": str(user_msg.id),
                     "message_id": str(assistant_msg.id),
                     "conversation_id": str(conv.id),
                     "active_documents": active_documents_payload,
                 }
+                if include_diagnostics:
+                    done["diagnostics"] = result.context.diagnostics
                 yield f"data: {json.dumps(done)}\n\n"
                 return
 
@@ -545,16 +699,21 @@ async def chat(
                     latency_ms=latency_ms,
                 )
                 db.add(assistant_msg)
+                for message in replace_messages:
+                    await db.delete(message)
                 await db.commit()
 
                 yield f"data: {json.dumps({'type': 'chunk', 'content': fallback_content})}\n\n"
                 yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
                 done = {
                     "type": "done",
+                    "user_message_id": str(user_msg.id),
                     "message_id": str(assistant_msg.id),
                     "conversation_id": str(conv.id),
                     "active_documents": active_documents_payload,
                 }
+                if include_diagnostics:
+                    done["diagnostics"] = result.context.diagnostics
                 yield f"data: {json.dumps(done)}\n\n"
                 return
 
@@ -582,18 +741,16 @@ async def list_conversations(
     )
     conversations = rows.scalars().all()
 
+    message_counts = await load_message_counts(db, [conversation.id for conversation in conversations])
     items = []
     for c in conversations:
-        msg_count = await db.execute(
-            select(func.count()).where(Message.conversation_id == c.id)
-        )
         items.append(
             ConversationResponse(
                 id=c.id,
                 title=c.title,
                 created_at=c.created_at,
                 updated_at=c.updated_at,
-                message_count=msg_count.scalar() or 0,
+                message_count=message_counts.get(c.id, 0),
             )
         )
 
@@ -633,17 +790,22 @@ async def update_conversation(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Update active document context for a conversation."""
+    """Update a conversation title and/or active document context."""
     conv = await db.get(Conversation, conversation_id)
     if conv is None or conv.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
 
-    requested_document_ids = list(dict.fromkeys(body.document_ids))
-    active_context = await load_active_document_context(db, user.id, requested_document_ids)
-    if active_context.missing_document_ids:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "One or more documents were not found")
+    if body.title is not None:
+        normalized_title = body.title.strip()
+        conv.title = normalized_title or None
 
-    conv.active_document_ids = requested_document_ids
+    if body.document_ids is not None:
+        requested_document_ids = list(dict.fromkeys(body.document_ids))
+        active_context = await load_active_document_context(db, user.id, requested_document_ids)
+        if active_context.missing_document_ids:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "One or more documents were not found")
+        conv.active_document_ids = requested_document_ids
+
     await db.commit()
     await db.refresh(conv)
     return await build_conversation_response(db, conv)
@@ -663,9 +825,50 @@ async def get_conversation_messages(
     if conv is None or conv.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
 
-    result = await db.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at)
-    )
-    return result.scalars().all()
+    return await load_conversation_messages(db, conversation_id)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Permanently delete an owned conversation and all related messages."""
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    await db.delete(conv)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/messages/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_conversation_message_pair(
+    conversation_id: UUID,
+    message_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Delete one logical chat exchange, keeping conversation history coherent."""
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    messages = await load_conversation_messages(db, conversation_id)
+    delete_ids = collect_message_pair_ids(messages, message_id)
+    if not delete_ids:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Message not found")
+
+    for message in messages:
+        if message.id in delete_ids:
+            await db.delete(message)
+
+    await db.flush()
+    conv.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

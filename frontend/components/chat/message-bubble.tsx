@@ -2,7 +2,8 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { User, Bot } from "lucide-react";
+import { Bot, Copy, PencilLine, RefreshCcw, Trash2, User } from "lucide-react";
+import { OverflowActionMenu } from "./overflow-action-menu";
 import { SourceCitation } from "./source-citation";
 import { ThinkingIndicator } from "./thinking-indicator";
 
@@ -15,12 +16,63 @@ interface MessageBubbleProps {
     state?: "streaming" | "complete" | "error";
   };
   onCitationClick: (num: number, sources?: any[]) => void;
+  onDelete?: (messageId: string) => void;
+  onEditAndResend?: (messageId: string, content: string) => void;
+  onRegenerate?: (messageId: string) => void;
+  onCopy?: (content: string) => void;
+  deleteDisabled?: boolean;
 }
 
-export function MessageBubble({ message, onCitationClick }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  onCitationClick,
+  onDelete,
+  onEditAndResend,
+  onRegenerate,
+  onCopy,
+  deleteDisabled = false,
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isStreaming = message.state === "streaming";
   const isError = message.state === "error";
+  const showActions = !isStreaming;
+  const actionItems = isUser
+    ? [
+        {
+          label: "Sửa và gửi lại",
+          icon: PencilLine,
+          disabled: deleteDisabled,
+          onSelect: () => onEditAndResend?.(message.id, message.content),
+        },
+        {
+          label: "Xóa đoạn chat",
+          icon: Trash2,
+          destructive: true,
+          disabled: deleteDisabled,
+          onSelect: () => onDelete?.(message.id),
+        },
+      ]
+    : [
+        {
+          label: "Tạo lại câu trả lời",
+          icon: RefreshCcw,
+          disabled: deleteDisabled,
+          onSelect: () => onRegenerate?.(message.id),
+        },
+        {
+          label: "Sao chép",
+          icon: Copy,
+          disabled: !message.content.trim(),
+          onSelect: () => onCopy?.(message.content),
+        },
+        {
+          label: "Xóa đoạn chat",
+          icon: Trash2,
+          destructive: true,
+          disabled: deleteDisabled,
+          onSelect: () => onDelete?.(message.id),
+        },
+      ];
 
   return (
     <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
@@ -41,6 +93,16 @@ export function MessageBubble({ message, onCitationClick }: MessageBubbleProps) 
               : "rounded-bl-md border border-white/7 bg-white/[0.04] text-content-primary backdrop-blur-sm"
         }`}
       >
+        {showActions && (
+          <div className={`mb-2 flex ${isUser ? "justify-start" : "justify-end"}`}>
+            <OverflowActionMenu
+              buttonLabel={isUser ? "Mở menu tin nhắn người dùng" : "Mở menu tin nhắn trợ lý"}
+              items={actionItems}
+              align={isUser ? "left" : "right"}
+              disabled={deleteDisabled}
+            />
+          </div>
+        )}
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : isStreaming && !message.content ? (

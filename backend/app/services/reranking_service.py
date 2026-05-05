@@ -146,11 +146,23 @@ class RerankingService:
         section_bonus = 0.08 if metadata.get("section") else 0.0
         original_rank_bonus = max(0.0, 0.15 - (original_rank * 0.01))
         section_bias = self._resolve_section_bias(query, chunk)
+        entity_bonus = self._entity_match_bonus(query, chunk)
 
-        return overlap_ratio + exact_phrase_bonus + section_bonus + original_rank_bonus + section_bias
+        return (
+            overlap_ratio
+            + exact_phrase_bonus
+            + section_bonus
+            + original_rank_bonus
+            + section_bias
+            + entity_bonus
+        )
 
     def _apply_section_bias(self, query: str, base_score: float, chunk: dict) -> float:
-        return base_score + (self._resolve_section_bias(query, chunk) * 1.5)
+        return (
+            base_score
+            + (self._resolve_section_bias(query, chunk) * 1.5)
+            + self._entity_match_bonus(query, chunk)
+        )
 
     @staticmethod
     def _resolve_section_bias(query: str, chunk: dict) -> float:
@@ -168,6 +180,53 @@ class RerankingService:
             for token in re.findall(r"\w+", text.lower())
             if len(token) > 2 and token not in _STOP_WORDS
         }
+
+    @classmethod
+    def _entity_match_bonus(cls, query: str, chunk: dict) -> float:
+        metadata = chunk.get("metadata", {})
+        searchable_text = " ".join(
+            [
+                str(chunk.get("content", "")),
+                str(metadata.get("document_title", "")),
+                str(metadata.get("section_path", "")),
+                str(metadata.get("section", "")),
+            ]
+        ).lower()
+        query_lower = query.lower()
+        bonus = 0.0
+
+        exact_entities = re.findall(
+            r"[\w.+-]+@[\w.-]+\.\w+|github(?:\.com)?/[^\s,]+|linkedin(?:\.com)?/[^\s,]+|\+?\d[\d\s().-]{7,}\d",
+            query_lower,
+        )
+        for entity in exact_entities:
+            if entity in searchable_text:
+                bonus += 0.18
+
+        priority_terms = [
+            term
+            for term in cls._tokenize(query_lower)
+            if term not in {"resume", "profile", "document", "question"}
+        ]
+        exact_matches = sum(1 for term in priority_terms if term in searchable_text)
+        bonus += min(exact_matches * 0.04, 0.22)
+
+        semantic_families = (
+            (("skill", "ky nang", "technology", "tool", "framework", "language"), 0.08),
+            (("company", "experience", "kinh nghiem", "organization", "vendor", "customer", "party"), 0.08),
+            (("education", "hoc van", "university", "degree", "major", "certification"), 0.06),
+            (("step", "procedure", "workflow", "setup", "install", "instruction", "configuration"), 0.07),
+            (("requirement", "criteria", "must", "shall", "condition", "clause", "term", "policy"), 0.07),
+            (("date", "deadline", "duration", "timeline", "schedule", "milestone"), 0.06),
+            (("result", "metric", "score", "accuracy", "performance", "amount", "budget", "total"), 0.06),
+        )
+        for markers, family_bonus in semantic_families:
+            if any(marker in query_lower for marker in markers) and any(
+                marker in searchable_text for marker in markers
+            ):
+                bonus += family_bonus
+
+        return bonus
 
 
 @lru_cache(maxsize=1)
