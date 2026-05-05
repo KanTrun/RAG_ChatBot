@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Chatbot - Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            heading: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            body: ['"Source Sans 3"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            surface: {
+              primary: '#0B0F1A',
+              secondary: '#111827',
+              tertiary: '#1F2937',
+              input: '#1A2332',
+              hover: '#263044',
+            },
+            border: {
+              DEFAULT: '#1E293B',
+              strong: '#334155',
+            },
+            content: {
+              primary: '#F1F5F9',
+              secondary: '#94A3B8',
+              tertiary: '#64748B',
+            },
+            accent: {
+              primary: '#6366F1',
+              'primary-hover': '#818CF8',
+              secondary: '#8B5CF6',
+              success: '#10B981',
+              warning: '#F59E0B',
+              error: '#EF4444',
+              info: '#3B82F6',
+              citation: '#14B8A6',
+            },
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Source Sans 3', system-ui, sans-serif; background: #0B0F1A; color: #F1F5F9; }
+    h1, h2, h3, h4, h5, h6 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* AI thinking animation */
+    @keyframes thinking-dot {
+      0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+      30% { opacity: 1; transform: translateY(-4px); }
+    }
+    .thinking-dot { animation: thinking-dot 1.4s ease-in-out infinite; }
+    .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    /* Chat message entrance */
+    @keyframes message-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message-animate { animation: message-in 200ms cubic-bezier(0, 0, 0.2, 1) forwards; }
+
+    /* Pulse for processing status */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+    /* Sidebar item transition */
+    .sidebar-item { transition: background-color 150ms, color 150ms; }
+
+    /* Citation hover */
+    .citation-badge { transition: background-color 150ms; cursor: pointer; }
+    .citation-badge:hover { background-color: rgba(20, 184, 166, 0.2); }
+
+    /* Textarea auto-height simulation */
+    .chat-textarea { resize: none; field-sizing: content; max-height: 200px; }
+
+    /* Gradient shimmer for AI avatar */
+    @keyframes gradient-shift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .ai-avatar-gradient {
+      background: linear-gradient(135deg, #6366F1, #8B5CF6, #A78BFA);
+      background-size: 200% 200%;
+      animation: gradient-shift 3s ease-in-out infinite;
+    }
+
+    /* Source panel slide */
+    .source-panel { transition: transform 300ms cubic-bezier(0, 0, 0.2, 1), opacity 300ms; }
+    .source-panel.hidden-panel { transform: translateX(100%); opacity: 0; pointer-events: none; }
+
+    /* Mobile sidebar overlay */
+    .sidebar-overlay { transition: opacity 300ms; }
+
+    /* Focus visible */
+    :focus-visible {
+      outline: 2px solid #6366F1;
+      outline-offset: 2px;
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+  <!-- ===== SIDEBAR ===== -->
+  <aside id="sidebar" class="w-[280px] bg-surface-secondary border-r border-border flex flex-col shrink-0 h-full
+    max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 max-lg:-translate-x-full max-lg:transition-transform max-lg:duration-300">
+
+    <!-- Sidebar Header -->
+    <div class="p-4 border-b border-border flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg ai-avatar-gradient flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+          </svg>
+        </div>
+        <h1 class="font-heading font-bold text-base text-content-primary">RAG Chat</h1>
+      </div>
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-surface-hover transition-colors"
+        aria-label="New conversation" title="New conversation">
+        <svg class="w-5 h-5 text-content-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Search -->
+    <div class="px-3 py-3">
+      <div class="relative">
+        <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+        </svg>
+        <input type="text" placeholder="Search conversations..."
+          class="w-full h-9 bg-surface-input border border-border rounded-lg pl-9 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:border-accent-primary focus:ring-2 focus:ring-accent-primary/20 outline-none transition-all" />
+      </div>
+    </div>
+
+    <!-- Conversation List -->
+    <nav class="flex-1 overflow-y-auto px-2 pb-3" aria-label="Conversation history">
+      <!-- Today -->
+      <p class="px-3 py-2 text-[11px] font-semibold text-content-tertiary uppercase tracking-wider font-heading">Today</p>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg bg-accent-primary/10 text-accent-primary font-medium text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">How does the ingestion pipeline work?</span>
+      </a>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-content-secondary hover:bg-surface-hover hover:text-content-primary text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">Explain hybrid search retrieval</span>
+      </a>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-content-secondary hover:bg-surface-hover hover:text-content-primary text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">What are the security policies?</span>
+      </a>
+
+      <!-- Yesterday -->
+      <p class="px-3 py-2 mt-3 text-[11px] font-semibold text-content-tertiary uppercase tracking-wider font-heading">Yesterday</p>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-content-secondary hover:bg-surface-hover hover:text-content-primary text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">Employee onboarding process</span>
+      </a>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-content-secondary hover:bg-surface-hover hover:text-content-primary text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">Travel reimbursement policy details</span>
+      </a>
+
+      <!-- Previous 7 Days -->
+      <p class="px-3 py-2 mt-3 text-[11px] font-semibold text-content-tertiary uppercase tracking-wider font-heading">Previous 7 Days</p>
+      <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-content-secondary hover:bg-surface-hover hover:text-content-primary text-sm mb-0.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 011.037-.443 48.282 48.282 0 005.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+        </svg>
+        <span class="truncate">Annual leave calculation rules</span>
+      </a>
+    </nav>
+
+    <!-- Sidebar Footer -->
+    <div class="border-t border-border p-3">
+      <div class="flex items-center gap-3 px-2">
+        <div class="w-8 h-8 rounded-full bg-accent-primary/20 flex items-center justify-center text-sm font-semibold text-accent-primary font-heading">
+          NT
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-content-primary truncate">Nguyen Tran</p>
+          <p class="text-xs text-content-tertiary">Admin</p>
+        </div>
+        <button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-hover transition-colors" aria-label="Settings">
+          <svg class="w-4 h-4 text-content-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Mobile sidebar overlay -->
+  <div id="sidebarOverlay" class="fixed inset-0 bg-black/60 z-20 hidden lg:hidden" onclick="toggleSidebar()"></div>
+
+  <!-- ===== MAIN CONTENT ===== -->
+  <main class="flex-1 flex flex-col min-w-0 h-full relative">
+
+    <!-- Top Bar -->
+    <header class="h-14 border-b border-border flex items-center justify-between px-4 shrink-0 bg-surface-primary/80 backdrop-blur-sm">
+      <div class="flex items-center gap-3">
+        <!-- Mobile hamburger -->
+        <button onclick="toggleSidebar()" class="lg:hidden w-9 h-9 rounded-lg flex items-center justify-center hover:bg-surface-hover transition-colors" aria-label="Toggle sidebar">
+          <svg class="w-5 h-5 text-content-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+          </svg>
+        </button>
+        <h2 class="font-heading font-semibold text-sm text-content-primary truncate">How does the ingestion pipeline work?</h2>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="toggleSourcePanel()" class="h-8 px-3 rounded-lg text-xs font-medium text-content-secondary border border-border hover:bg-surface-hover hover:text-content-primary transition-colors flex items-center gap-1.5" aria-label="Toggle sources panel">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+          </svg>
+          <span>Sources</span>
+          <span class="bg-accent-citation/15 text-accent-citation px-1.5 py-0.5 rounded text-[10px] font-semibold">3</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Chat + Sources Container -->
+    <div class="flex-1 flex overflow-hidden">
+
+      <!-- Chat Area -->
+      <div class="flex-1 flex flex-col min-w-0">
+
+        <!-- Messages -->
+        <div class="flex-1 overflow-y-auto" role="log" aria-label="Chat messages" id="chatMessages">
+          <div class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+
+            <!-- User Message 1 -->
+            <div class="flex justify-end message-animate">
+              <div class="max-w-[80%] bg-accent-primary text-white rounded-2xl rounded-br-md px-4 py-3">
+                <p class="text-[15px] leading-relaxed">How does the document ingestion pipeline work? I want to understand the full flow from upload to searchable chunks.</p>
+              </div>
+            </div>
+
+            <!-- AI Response 1 -->
+            <div class="flex gap-3 message-animate" style="animation-delay: 50ms">
+              <div class="w-8 h-8 rounded-lg ai-avatar-gradient flex items-center justify-center shrink-0 mt-1">
+                <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+                </svg>
+              </div>
+              <div class="max-w-[85%]">
+                <div class="bg-surface-tertiary rounded-2xl rounded-bl-md px-4 py-3">
+                  <p class="text-[15px] leading-relaxed text-content-primary mb-3">The document ingestion pipeline follows a multi-stage async process:</p>
+                  <ol class="text-[15px] leading-relaxed text-content-primary space-y-2 list-decimal list-inside">
+                    <li><strong class="text-content-primary">Upload & Storage</strong> -- The raw document (PDF, DOCX, etc.) is uploaded via the API and stored in the file storage system (local FS in dev, S3/MinIO in prod). <span class="citation-badge inline-flex items-center gap-1 bg-accent-citation/10 text-accent-citation rounded-md px-1.5 py-0.5 text-xs font-medium font-mono align-middle"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>architecture.pdf, p.12</span></li>
+                    <li><strong class="text-content-primary">Parsing</strong> -- PyMuPDF extracts text content. For complex or scanned documents, Marker is used as fallback with OCR capabilities.</li>
+                    <li><strong class="text-content-primary">Chunking</strong> -- LlamaIndex node parsers split the document into semantic chunks with configurable size (default: 512 tokens) and overlap (64 tokens). <span class="citation-badge inline-flex items-center gap-1 bg-accent-citation/10 text-accent-citation rounded-md px-1.5 py-0.5 text-xs font-medium font-mono align-middle"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>chunking-guide.pdf, p.5</span></li>
+                    <li><strong class="text-content-primary">Embedding</strong> -- BGE-M3 generates dense + sparse embeddings for each chunk. This enables hybrid search (vector similarity + BM25).</li>
+                    <li><strong class="text-content-primary">Storage</strong> -- Embeddings and chunk metadata are stored in PostgreSQL with pgvector (HNSW index) and tsvector for full-text search. <span class="citation-badge inline-flex items-center gap-1 bg-accent-citation/10 text-accent-citation rounded-md px-1.5 py-0.5 text-xs font-medium font-mono align-middle"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>db-schema.pdf, p.3</span></li>
+                  </ol>
+                  <p class="text-[15px] leading-relaxed text-content-primary mt-3">The entire process runs asynchronously via <strong>Celery + Redis</strong>, so users aren't blocked while large documents are being processed.</p>
+                </div>
+                <!-- Feedback row -->
+                <div class="flex items-center gap-1 mt-2 ml-1">
+                  <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-surface-hover transition-colors group" aria-label="Helpful">
+                    <svg class="w-3.5 h-3.5 text-content-tertiary group-hover:text-content-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6.633 10.5c.806 0 1.533-.446 2.031-1.08a9.041 9.041 0 012.861-2.4c.723-.384 1.35-.956 1.653-1.715a4.498 4.498 0 00.322-1.672V3a.75.75 0 01.75-.75A2.25 2.25 0 0116.5 4.5c0 1.152-.26 2.243-.723 3.218-.266.558.107 1.282.725 1.282h3.126c1.026 0 1.945.694 2.054 1.715.045.422.068.85.068 1.285a11.95 11.95 0 01-2.649 7.521c-.388.482-.987.729-1.605.729H14.23c-.483 0-.964-.078-1.423-.23l-3.114-1.04a4.501 4.501 0 00-1.423-.23H5.904M14.25 9h2.25M5.904 18.75c.083.205.173.405.27.602.197.4-.078.898-.523.898h-.908c-.889 0-1.713-.518-1.972-1.368a12 12 0 01-.521-3.507c0-1.553.295-3.036.831-4.398C3.387 10.203 4.167 9.75 5 9.75h1.053c.472 0 .745.556.5.96a8.958 8.958 0 00-1.302 4.665c0 1.194.232 2.333.654 3.375z" />
+                    </svg>
+                  </button>
+                  <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-surface-hover transition-colors group" aria-label="Not helpful">
+                    <svg class="w-3.5 h-3.5 text-content-tertiary group-hover:text-content-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 15h2.25m8.024-9.75c.011.05.028.1.052.148.591 1.2.924 2.55.924 3.977a8.96 8.96 0 01-.999 4.125m.023-8.25c-.076-.365.183-.75.575-.75h.908c.889 0 1.713.518 1.972 1.368.339 1.11.521 2.287.521 3.507 0 1.553-.295 3.036-.831 4.398-.306.774-1.086 1.227-1.918 1.227h-1.053c-.472 0-.745-.556-.5-.96a8.95 8.95 0 001.302-4.665c0-1.194-.232-2.333-.654-3.375z" />
+                    </svg>
+                  </button>
+                  <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-surface-hover transition-colors group" aria-label="Copy response">
+                    <svg class="w-3.5 h-3.5 text-content-tertiary group-hover:text-content-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- User Message 2 -->
+            <div class="flex justify-end message-animate" style="animation-delay: 100ms">
+              <div class="max-w-[80%] bg-accent-primary text-white rounded-2xl rounded-br-md px-4 py-3">
+                <p class="text-[15px] leading-relaxed">What happens if a document fails during parsing? Is there automatic retry?</p>
+              </div>
+            </div>
+
+            <!-- AI Thinking Indicator -->
+            <div class="flex gap-3 message-animate" style="animation-delay: 150ms" aria-busy="true" aria-label="AI is generating a response">
+              <div class="w-8 h-8 rounded-lg ai-avatar-gradient flex items-center justify-center shrink-0 mt-1">
+                <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+                </svg>
+              </div>
+              <div class="bg-surface-tertiary rounded-2xl rounded-bl-md px-4 py-4">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-content-tertiary font-medium">Searching documents</span>
+                  <div class="flex gap-1">
+                    <span class="thinking-dot w-1.5 h-1.5 bg-accent-primary rounded-full inline-block"></span>
+                    <span class="thinking-dot w-1.5 h-1.5 bg-accent-primary rounded-full inline-block"></span>
+                    <span class="thinking-dot w-1.5 h-1.5 bg-accent-primary rounded-full inline-block"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="border-t border-border bg-surface-primary px-4 py-3">
+          <div class="max-w-3xl mx-auto">
+            <div class="bg-surface-tertiary border border-border rounded-2xl flex items-end px-3 py-2 gap-2 focus-within:border-accent-primary focus-within:ring-2 focus-within:ring-accent-primary/20 transition-all">
+              <!-- Attach file -->
+              <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-surface-hover transition-colors shrink-0 mb-0.5" aria-label="Attach file">
+                <svg class="w-5 h-5 text-content-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+                </svg>
+              </button>
+              <!-- Textarea -->
+              <textarea
+                class="chat-textarea flex-1 bg-transparent text-[15px] text-content-primary placeholder:text-content-tertiary outline-none py-1.5 min-h-[36px]"
+                placeholder="Ask about your documents..."
+                rows="1"
+                aria-label="Message input"
+              ></textarea>
+              <!-- Send button -->
+              <button class="w-9 h-9 rounded-lg bg-accent-primary hover:bg-accent-primary-hover flex items-center justify-center transition-colors shrink-0 mb-0.5 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Send message">
+                <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                </svg>
+              </button>
+            </div>
+            <p class="text-[11px] text-content-tertiary text-center mt-2">RAG Chat can make mistakes. Verify important information against source documents.</p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ===== SOURCES PANEL ===== -->
+      <aside id="sourcePanel" class="source-panel w-[340px] border-l border-border bg-surface-secondary overflow-y-auto shrink-0
+        max-xl:fixed max-xl:right-0 max-xl:top-14 max-xl:bottom-0 max-xl:z-20 max-xl:shadow-2xl">
+
+        <div class="p-4 border-b border-border flex items-center justify-between sticky top-0 bg-surface-secondary z-10">
+          <h3 class="font-heading font-semibold text-sm text-content-primary">Sources Used</h3>
+          <span class="bg-accent-citation/15 text-accent-citation px-2 py-0.5 rounded-md text-xs font-semibold font-mono">3 docs</span>
+        </div>
+
+        <div class="p-4 space-y-3">
+          <!-- Source 1 -->
+          <div class="bg-surface-tertiary border border-border rounded-xl p-4 hover:border-border-strong transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <div class="w-8 h-8 rounded-lg bg-accent-info/10 flex items-center justify-center shrink-0">
+                <svg class="w-4 h-4 text-accent-info" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-content-primary truncate">architecture.pdf</p>
+                <p class="text-xs text-content-tertiary mt-0.5">Page 12 -- Section: Ingestion Pipeline</p>
+              </div>
+              <span class="text-[10px] font-mono text-accent-success bg-accent-success/10 px-1.5 py-0.5 rounded font-medium shrink-0">0.94</span>
+            </div>
+            <p class="text-xs text-content-secondary mt-3 leading-relaxed line-clamp-3">"Documents are uploaded via the REST API endpoint and stored in the configured file storage backend. A Celery task is queued to process the document asynchronously..."</p>
+          </div>
+
+          <!-- Source 2 -->
+          <div class="bg-surface-tertiary border border-border rounded-xl p-4 hover:border-border-strong transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <div class="w-8 h-8 rounded-lg bg-accent-info/10 flex items-center justify-center shrink-0">
+                <svg class="w-4 h-4 text-accent-info" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-content-primary truncate">chunking-guide.pdf</p>
+                <p class="text-xs text-content-tertiary mt-0.5">Page 5 -- Section: Chunk Configuration</p>
+              </div>
+              <span class="text-[10px] font-mono text-accent-success bg-accent-success/10 px-1.5 py-0.5 rounded font-medium shrink-0">0.89</span>
+            </div>
+            <p class="text-xs text-content-secondary mt-3 leading-relaxed line-clamp-3">"The default chunk size is 512 tokens with a 64-token overlap. LlamaIndex SentenceSplitter is used for semantic chunking, preserving sentence boundaries..."</p>
+          </div>
+
+          <!-- Source 3 -->
+          <div class="bg-surface-tertiary border border-border rounded-xl p-4 hover:border-border-strong transition-colors cursor-pointer">
+            <div class="flex items-start gap-3">
+              <div class="w-8 h-8 rounded-lg bg-accent-info/10 flex items-center justify-center shrink-0">
+                <svg class="w-4 h-4 text-accent-info" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-content-primary truncate">db-schema.pdf</p>
+                <p class="text-xs text-content-tertiary mt-0.5">Page 3 -- Section: Vector Storage</p>
+              </div>
+              <span class="text-[10px] font-mono text-accent-warning bg-accent-warning/10 px-1.5 py-0.5 rounded font-medium shrink-0">0.78</span>
+            </div>
+            <p class="text-xs text-content-secondary mt-3 leading-relaxed line-clamp-3">"Embeddings are stored in the document_chunks table with a pgvector column (vector(1024)) indexed using HNSW with cosine similarity..."</p>
+          </div>
+        </div>
+
+      </aside>
+
+    </div>
+
+  </main>
+
+  <script>
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('sidebarOverlay');
+      sidebar.classList.toggle('max-lg:-translate-x-full');
+      sidebar.classList.toggle('max-lg:translate-x-0');
+      overlay.classList.toggle('hidden');
+    }
+
+    function toggleSourcePanel() {
+      const panel = document.getElementById('sourcePanel');
+      panel.classList.toggle('hidden-panel');
+    }
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Chatbot - Login (Legacy Wireframe)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            heading: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            body: ['"Source Sans 3"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            surface: {
+              primary: '#0B0F1A',
+              secondary: '#111827',
+              tertiary: '#1F2937',
+              input: '#1A2332',
+              hover: '#263044',
+            },
+            border: {
+              DEFAULT: '#1E293B',
+              strong: '#334155',
+            },
+            content: {
+              primary: '#F1F5F9',
+              secondary: '#94A3B8',
+              tertiary: '#64748B',
+            },
+            accent: {
+              primary: '#6366F1',
+              'primary-hover': '#818CF8',
+              secondary: '#8B5CF6',
+              success: '#10B981',
+              warning: '#F59E0B',
+              error: '#EF4444',
+              info: '#3B82F6',
+              citation: '#14B8A6',
+            },
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Source Sans 3', system-ui, sans-serif; background: #0B0F1A; color: #F1F5F9; }
+    h1, h2, h3, h4, h5, h6 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+
+    /* Animated gradient background */
+    @keyframes gradient-bg {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .gradient-bg {
+      background: linear-gradient(135deg, #0B0F1A 0%, #111827 25%, #0B0F1A 50%, #1a1035 75%, #0B0F1A 100%);
+      background-size: 400% 400%;
+      animation: gradient-bg 15s ease infinite;
+    }
+
+    /* Floating orbs */
+    @keyframes float-orb-1 {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(30px, -30px) scale(1.05); }
+      66% { transform: translate(-20px, 20px) scale(0.95); }
+    }
+    @keyframes float-orb-2 {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(-40px, 20px) scale(1.1); }
+      66% { transform: translate(25px, -15px) scale(0.9); }
+    }
+    .orb-1 {
+      animation: float-orb-1 20s ease-in-out infinite;
+    }
+    .orb-2 {
+      animation: float-orb-2 25s ease-in-out infinite;
+    }
+
+    /* Input focus glow */
+    .input-glow:focus {
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15), 0 0 20px rgba(99, 102, 241, 0.05);
+    }
+
+    /* Button press effect */
+    .btn-press:active {
+      transform: scale(0.98);
+    }
+
+    /* OAuth button hover */
+    .oauth-btn {
+      transition: background-color 150ms, border-color 150ms, transform 150ms;
+    }
+    .oauth-btn:hover {
+      border-color: #334155;
+      background-color: #1F2937;
+    }
+    .oauth-btn:active {
+      transform: scale(0.98);
+    }
+
+    /* Divider */
+    .divider-line {
+      flex: 1;
+      height: 1px;
+      background: #1E293B;
+    }
+
+    /* Card glass effect */
+    .glass-card {
+      background: rgba(17, 24, 39, 0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+
+    :focus-visible {
+      outline: 2px solid #6366F1;
+      outline-offset: 2px;
+    }
+
+    /* Password toggle */
+    .password-toggle { transition: color 150ms; }
+    .password-toggle:hover { color: #94A3B8; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen gradient-bg flex items-center justify-center relative overflow-hidden">
+
+  <!-- Decorative orbs -->
+  <div class="orb-1 absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-accent-primary/5 rounded-full blur-3xl pointer-events-none"></div>
+  <div class="orb-2 absolute bottom-[-15%] left-[-10%] w-[600px] h-[600px] bg-accent-secondary/5 rounded-full blur-3xl pointer-events-none"></div>
+
+  <!-- Grid pattern overlay -->
+  <div class="absolute inset-0 pointer-events-none opacity-[0.03]"
+    style="background-image: radial-gradient(circle, #F1F5F9 1px, transparent 1px); background-size: 32px 32px;">
+  </div>
+
+  <!-- Login Container -->
+    <main class="relative z-10 w-full max-w-md mx-4">
+
+    <!-- Brand Header -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-accent-primary to-accent-secondary mb-5 shadow-lg shadow-accent-primary/20">
+        <svg class="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+        </svg>
+      </div>
+      <h1 class="font-heading font-bold text-2xl text-content-primary">RAG Chat</h1>
+      <p class="text-sm text-content-secondary mt-1.5">AI-powered document assistant</p>
+    </div>
+
+    <div class="mb-6 rounded-2xl border border-accent-warning/25 bg-accent-warning/10 px-4 py-3 text-xs leading-5 text-accent-warning">
+      Legacy concept wireframe. The implemented auth pages now use a premium two-panel shell,
+      theme toggle, and Google/GitHub-first sign-in flow under <code>frontend/app/(auth)</code>.
+    </div>
+
+    <!-- Login Card -->
+    <div class="glass-card border border-border rounded-2xl p-8">
+
+      <h2 class="font-heading font-semibold text-lg text-content-primary mb-1">Welcome back</h2>
+      <p class="text-sm text-content-secondary mb-6">Sign in to your account to continue</p>
+
+      <!-- OAuth Buttons -->
+      <div class="space-y-3 mb-6">
+        <!-- Google -->
+        <button class="oauth-btn w-full h-11 rounded-lg border border-border bg-surface-tertiary flex items-center justify-center gap-3 text-sm font-medium text-content-primary">
+          <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          Continue with Google
+        </button>
+
+        <!-- Microsoft -->
+        <button class="oauth-btn w-full h-11 rounded-lg border border-border bg-surface-tertiary flex items-center justify-center gap-3 text-sm font-medium text-content-primary">
+          <svg class="w-[18px] h-[18px]" viewBox="0 0 23 23">
+            <rect x="1" y="1" width="10" height="10" fill="#F25022"/>
+            <rect x="12" y="1" width="10" height="10" fill="#7FBA00"/>
+            <rect x="1" y="12" width="10" height="10" fill="#00A4EF"/>
+            <rect x="12" y="12" width="10" height="10" fill="#FFB900"/>
+          </svg>
+          Continue with Microsoft
+        </button>
+
+        <!-- GitHub -->
+        <button class="oauth-btn w-full h-11 rounded-lg border border-border bg-surface-tertiary flex items-center justify-center gap-3 text-sm font-medium text-content-primary">
+          <svg class="w-[18px] h-[18px] text-content-primary" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+          </svg>
+          Continue with GitHub
+        </button>
+      </div>
+
+      <!-- Divider -->
+      <div class="flex items-center gap-4 mb-6">
+        <div class="divider-line"></div>
+        <span class="text-xs text-content-tertiary font-medium uppercase tracking-wider shrink-0">or sign in with email</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <!-- Email/Password Form -->
+      <form class="space-y-4" onsubmit="event.preventDefault()">
+        <!-- Email -->
+        <div>
+          <label for="email" class="block text-sm font-medium text-content-primary mb-1.5">Email address</label>
+          <input
+            id="email"
+            type="email"
+            placeholder="you@company.com"
+            autocomplete="email"
+            required
+            class="input-glow w-full h-11 bg-surface-input border border-border rounded-lg px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:border-accent-primary outline-none transition-all"
+          />
+        </div>
+
+        <!-- Password -->
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="password" class="block text-sm font-medium text-content-primary">Password</label>
+            <a href="#" class="text-xs text-accent-primary hover:text-accent-primary-hover transition-colors">Forgot password?</a>
+          </div>
+          <div class="relative">
+            <input
+              id="password"
+              type="password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+              class="input-glow w-full h-11 bg-surface-input border border-border rounded-lg px-3 pr-10 text-sm text-content-primary placeholder:text-content-tertiary focus:border-accent-primary outline-none transition-all"
+            />
+            <button type="button" onclick="togglePassword()" class="password-toggle absolute right-3 top-1/2 -translate-y-1/2 text-content-tertiary" aria-label="Toggle password visibility">
+              <svg id="eyeIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Remember me -->
+        <div class="flex items-center gap-2">
+          <input
+            id="remember"
+            type="checkbox"
+            class="w-4 h-4 rounded border-border bg-surface-input text-accent-primary focus:ring-accent-primary/20 focus:ring-2 cursor-pointer accent-[#6366F1]"
+          />
+          <label for="remember" class="text-sm text-content-secondary cursor-pointer select-none">Remember me for 30 days</label>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="btn-press w-full h-11 rounded-lg bg-accent-primary hover:bg-accent-primary-hover text-white text-sm font-semibold transition-colors shadow-lg shadow-accent-primary/20">
+          Sign in
+        </button>
+      </form>
+
+      <!-- Error state example (hidden by default, shown for wireframe reference) -->
+      <div class="mt-4 p-3 bg-accent-error/10 border border-accent-error/20 rounded-lg hidden" id="errorMsg">
+        <div class="flex items-start gap-2">
+          <svg class="w-4 h-4 text-accent-error shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <p class="text-xs text-accent-error">Invalid email or password. Please try again.</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="text-center mt-6 space-y-3">
+      <p class="text-sm text-content-secondary">
+        Don't have an account?
+        <a href="#" class="text-accent-primary hover:text-accent-primary-hover font-medium transition-colors">Request access</a>
+      </p>
+      <div class="flex items-center justify-center gap-4 text-xs text-content-tertiary">
+        <a href="#" class="hover:text-content-secondary transition-colors">Privacy Policy</a>
+        <span>--</span>
+        <a href="#" class="hover:text-content-secondary transition-colors">Terms of Service</a>
+        <span>--</span>
+        <a href="#" class="hover:text-content-secondary transition-colors">Help</a>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    function togglePassword() {
+      const input = document.getElementById('password');
+      const icon = document.getElementById('eyeIcon');
+      if (input.type === 'password') {
+        input.type = 'text';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />';
+      } else {
+        input.type = 'password';
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />';
+      }
+    }
+  </script>
+
+</body>
+</html>
