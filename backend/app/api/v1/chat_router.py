@@ -1,25 +1,26 @@
-"""Chat router: SSE streaming, conversations, messages."""
+"""Chat router: SSE streaming, conversations, messages, structured logging, and diagnostics."""
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+import tiktoken
 
 from app.api.dependencies import get_current_user, get_pagination
 from app.auth.auth_middleware import is_admin
+from app.config import get_settings
 from app.dependencies import get_db
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentStatus
 from app.models.message import Message, MessageRole
-from app.config import get_settings
 from app.prompts.rag_prompt_template import build_rag_messages
 from app.prompts.system_prompt import (
     GENERAL_ONLY_PROMPT,
@@ -44,9 +45,14 @@ from app.services.llm import get_llm_provider
 from app.services.llm.base_provider import LLMConfig
 from app.services.query_rewriter import QueryRewriter
 from app.services.retrieval_intent_service import build_retrieval_plan
-from app.services.retrieval_service import RetrievalService, RetrievalResult, SearchFilters
+from app.services.retrieval_service import (
+    RetrievalResult,
+    RetrievalService,
+    SearchFilters,
+)
 
 logger = logging.getLogger(__name__)
+_tokenizer = tiktoken.get_encoding("cl100k_base")
 
 router = APIRouter(tags=["chat"])
 
@@ -73,6 +79,56 @@ STRICT_LOW_SUPPORT_RESPONSE = (
     "I could not find enough support in the current document context to answer that. "
     "Try selecting the relevant documents, waiting for indexing to finish, or ask a question that is more directly covered by the documents."
 )
+
+
+def _count_tokens(text_value: str) -> int:
+    if not text_value:
+        return 0
+    return len(_tokenizer.encode(text_value))
+
+
+def _emit_structured_chat_log(
+    *,
+    conversation_id: UUID,
+    user_id: UUID,
+    query: str,
+    response_mode: str,
+    abstained: bool,
+    used_outside_knowledge: bool,
+    diagnostics: dict,
+) -> None:
+    latency = diagnostics.get("latency_breakdown_ms") or {}
+    tokens = diagnostics.get("tokens") or {}
+    payload = {
+        "event": "chat_query_completed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "conversation_id": str(conversation_id),
+        "user_id": str(user_id),
+        "query": query[:200],
+        "response_mode": response_mode,
+        "intent": diagnostics.get("intent"),
+        "candidate_count": diagnostics.get("candidate_count", 0),
+        "vector_candidates_count": diagnostics.get("vector_candidates_count", 0),
+        "bm25_candidates_count": diagnostics.get("bm25_candidates_count", 0),
+        "bm25_used": diagnostics.get("bm25_used", False),
+        "bm25_contributed": diagnostics.get("bm25_contributed", False),
+        "top_k_scores": diagnostics.get("top_k_scores", []),
+        "latency_ms": {
+            "rewrite_ms": latency.get("rewrite_ms", 0),
+            "retrieval_ms": latency.get("retrieval_ms", 0),
+            "rerank_ms": latency.get("rerank_ms", 0),
+            "generation_ms": latency.get("generation_ms", 0),
+            "total_ms": latency.get("total_ms", 0),
+        },
+        "tokens": {
+            "prompt_tokens": tokens.get("prompt_tokens", 0),
+            "completion_tokens": tokens.get("completion_tokens", 0),
+            "total_tokens": tokens.get("total_tokens", 0),
+        },
+        "abstained": abstained,
+        "used_outside_knowledge": used_outside_knowledge,
+    }
+    logger.info("STRUCTURED_CHAT_LOG %s", json.dumps(payload, ensure_ascii=False))
 
 
 def ensure_chat_providers_configured() -> None:
@@ -132,19 +188,49 @@ async def stream_static_reply(
     replace_messages: list[Message] | None = None,
     active_documents: list[dict] | None = None,
     diagnostics: dict | None = None,
+    abstained: bool = False,
 ):
+    total_ms = int((time.time() - start_time) * 1000)
+    completion_tokens = _count_tokens(content)
+    enriched_diag = dict(diagnostics or {})
+    latency_breakdown = dict(enriched_diag.get("latency_breakdown_ms") or {})
+    latency_breakdown.setdefault("rewrite_ms", 0)
+    latency_breakdown.setdefault("retrieval_ms", enriched_diag.get("retrieval_ms", 0))
+    latency_breakdown.setdefault("rerank_ms", enriched_diag.get("rerank_ms", 0))
+    latency_breakdown.setdefault("generation_ms", 0)
+    latency_breakdown["total_ms"] = total_ms
+    enriched_diag["latency_breakdown_ms"] = latency_breakdown
+    enriched_diag["tokens"] = {
+        "prompt_tokens": 0,
+        "completion_tokens": completion_tokens,
+        "total_tokens": completion_tokens,
+    }
+    enriched_diag["abstained"] = abstained
+    enriched_diag["used_outside_knowledge"] = False
+
     assistant_msg = Message(
         conversation_id=conv.id,
         role=MessageRole.assistant,
         content=content,
         sources=[],
-        latency_ms=int((time.time() - start_time) * 1000),
+        tokens_used=completion_tokens,
+        latency_ms=total_ms,
     )
     db.add(assistant_msg)
     if replace_messages:
         for message in replace_messages:
             await db.delete(message)
     await db.commit()
+
+    _emit_structured_chat_log(
+        conversation_id=conv.id,
+        user_id=conv.user_id,
+        query=conv.title or "",
+        response_mode="strict_documents",
+        abstained=abstained,
+        used_outside_knowledge=False,
+        diagnostics=enriched_diag,
+    )
 
     yield f"data: {json.dumps({'type': 'chunk', 'content': content})}\n\n"
     done_payload = {
@@ -153,9 +239,10 @@ async def stream_static_reply(
         "message_id": str(assistant_msg.id),
         "conversation_id": str(conv.id),
         "active_documents": active_documents or [],
+        "abstained": abstained,
+        "used_outside_knowledge": False,
+        "diagnostics": enriched_diag,
     }
-    if diagnostics:
-        done_payload["diagnostics"] = diagnostics
     yield f"data: {json.dumps(done_payload)}\n\n"
 
 
@@ -191,6 +278,12 @@ def build_empty_retrieval_result(query: str) -> RetrievalResult:
 def enrich_chat_diagnostics(diagnostics: dict | None, retrieval_plan) -> dict:
     enriched = dict(diagnostics or {})
     enriched.setdefault("intent", retrieval_plan.intent.value)
+    enriched.setdefault("candidate_count", 0)
+    enriched.setdefault("vector_candidates_count", 0)
+    enriched.setdefault("bm25_candidates_count", 0)
+    enriched.setdefault("bm25_used", bool(get_settings().enable_bm25))
+    enriched.setdefault("bm25_contributed", False)
+    enriched.setdefault("top_k_scores", [])
     enriched["query_classification"] = retrieval_plan.query_classification
     enriched["document_target_required"] = retrieval_plan.document_target_required
     enriched["classification_reason"] = retrieval_plan.classification_reason
@@ -316,11 +409,13 @@ def build_chat_generation_config(
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Chat endpoint with SSE streaming response."""
+    """Chat endpoint with SSE streaming response, 120s first-token timeout, and diagnostics."""
     start_time = time.time()
+    settings = get_settings()
 
     # Load or create conversation
     if body.conversation_id:
@@ -367,6 +462,7 @@ async def chat(
         conversation_id=conv.id,
         role=MessageRole.user,
         content=body.query,
+        tokens_used=_count_tokens(body.query),
     )
     db.add(user_msg)
     await db.flush()
@@ -439,7 +535,6 @@ async def chat(
         )
 
     strict_mode = body.response_mode == ChatResponseMode.strict_documents
-    include_diagnostics = body.include_diagnostics and is_admin(user)
     preview_retrieval_plan = build_retrieval_plan(
         body.query,
         len(active_context.indexed_documents),
@@ -455,14 +550,11 @@ async def chat(
                 user_message_id=user_msg.id,
                 replace_messages=replace_messages,
                 active_documents=active_documents_payload,
-                diagnostics=(
-                    enrich_chat_diagnostics(
-                        {"low_support_reason": STRICT_NO_DOCUMENTS_RESPONSE},
-                        preview_retrieval_plan,
-                    )
-                    if include_diagnostics
-                    else None
+                diagnostics=enrich_chat_diagnostics(
+                    {"low_support_reason": STRICT_NO_DOCUMENTS_RESPONSE},
+                    preview_retrieval_plan,
                 ),
+                abstained=True,
             ),
             media_type="text/event-stream",
         )
@@ -485,13 +577,15 @@ async def chat(
 
     llm_provider = get_llm_provider()
     result = build_empty_retrieval_result(body.query)
-    active_indexed_document_count = len(active_context.indexed_documents)
     retrieval_plan = preview_retrieval_plan
+    rewrite_ms = 0
 
     if has_indexed_documents or has_active_indexed_documents:
         try:
+            rewrite_start = time.perf_counter()
             rewriter = QueryRewriter(llm_provider)
             rewritten_query = await rewriter.rewrite(body.query, history)
+            rewrite_ms = int((time.perf_counter() - rewrite_start) * 1000)
             alternate_queries = (
                 [rewritten_query]
                 if rewritten_query.strip() and rewritten_query.strip() != body.query.strip()
@@ -531,6 +625,8 @@ async def chat(
             result = build_empty_retrieval_result(body.query)
 
     result.context.diagnostics = enrich_chat_diagnostics(result.context.diagnostics, retrieval_plan)
+    result.context.diagnostics["candidate_count"] = result.candidate_count
+    result.context.diagnostics["rewrite_ms"] = rewrite_ms
 
     if strict_mode and (result.low_confidence or not has_grounded_context(result)):
         return StreamingResponse(
@@ -542,7 +638,8 @@ async def chat(
                 user_message_id=user_msg.id,
                 replace_messages=replace_messages,
                 active_documents=active_documents_payload,
-                diagnostics=result.context.diagnostics if include_diagnostics else None,
+                diagnostics=result.context.diagnostics,
+                abstained=True,
             ),
             media_type="text/event-stream",
         )
@@ -557,7 +654,8 @@ async def chat(
                 user_message_id=user_msg.id,
                 replace_messages=replace_messages,
                 active_documents=active_documents_payload,
-                diagnostics=result.context.diagnostics if include_diagnostics else None,
+                diagnostics=result.context.diagnostics,
+                abstained=True,
             ),
             media_type="text/event-stream",
         )
@@ -585,6 +683,7 @@ async def chat(
         conversation_history=history[-4:] if history else None,
         answer_brief=None if allow_general_answer else result.context.answer_brief,
     )
+    prompt_tokens = sum(_count_tokens(m.get("content", "")) for m in messages)
 
     # Prepare sources metadata for SSE
     sources_data = (
@@ -614,15 +713,49 @@ async def chat(
         ]
     )
 
+    first_token_timeout = max(int(settings.first_token_timeout_seconds), 120)
+    chunk_timeout = max(int(settings.stream_chunk_timeout_seconds), 60)
+    warmup_status = getattr(getattr(request, "app", None), "state", None)
+    current_warmup = getattr(warmup_status, "model_warmup_status", "ready") if warmup_status else "ready"
+
+    def _finalize_diagnostics(content_text: str, gen_ms: int, total_ms: int) -> dict:
+        completion_tokens = _count_tokens(content_text)
+        diag = dict(result.context.diagnostics or {})
+        retrieval_ms = int(diag.get("retrieval_ms") or 0)
+        rerank_ms = int(diag.get("rerank_ms") or 0)
+        diag["latency_breakdown_ms"] = {
+            "rewrite_ms": rewrite_ms,
+            "retrieval_ms": retrieval_ms,
+            "rerank_ms": rerank_ms,
+            "generation_ms": gen_ms,
+            "total_ms": total_ms,
+        }
+        diag["tokens"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+        diag["abstained"] = False
+        diag["used_outside_knowledge"] = allow_general_answer
+        diag["response_mode"] = body.response_mode.value
+        return diag
+
     async def event_stream():
         full_content = ""
+        gen_start = time.perf_counter()
+        first_chunk_received = False
         try:
+            if current_warmup == "warming_up":
+                yield f"data: {json.dumps({'type': 'status', 'status': 'loading_model', 'content': 'Đang tải model, vui lòng chờ...'})}\n\n"
+
             stream = llm_provider.generate_stream(messages, generation_config).__aiter__()
             while True:
                 try:
-                    chunk = await asyncio.wait_for(stream.__anext__(), timeout=30)
+                    wait_seconds = first_token_timeout if not first_chunk_received else chunk_timeout
+                    chunk = await asyncio.wait_for(stream.__anext__(), timeout=wait_seconds)
                 except StopAsyncIteration:
                     break
+                first_chunk_received = True
                 full_content += chunk
                 event = {"type": "chunk", "content": chunk}
                 yield f"data: {json.dumps(event)}\n\n"
@@ -631,18 +764,33 @@ async def chat(
             yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
 
             # Save assistant message
+            gen_ms = int((time.perf_counter() - gen_start) * 1000)
             latency_ms = int((time.time() - start_time) * 1000)
+            final_diag = _finalize_diagnostics(full_content, gen_ms, latency_ms)
+            completion_tokens = final_diag["tokens"]["completion_tokens"]
+
             assistant_msg = Message(
                 conversation_id=conv.id,
                 role=MessageRole.assistant,
                 content=full_content,
                 sources=sources_data,
+                tokens_used=completion_tokens,
                 latency_ms=latency_ms,
             )
             db.add(assistant_msg)
             for message in replace_messages:
                 await db.delete(message)
             await db.commit()
+
+            _emit_structured_chat_log(
+                conversation_id=conv.id,
+                user_id=user.id,
+                query=body.query,
+                response_mode=body.response_mode.value,
+                abstained=False,
+                used_outside_knowledge=allow_general_answer,
+                diagnostics=final_diag,
+            )
 
             # Done event
             done = {
@@ -651,26 +799,40 @@ async def chat(
                 "message_id": str(assistant_msg.id),
                 "conversation_id": str(conv.id),
                 "active_documents": active_documents_payload,
+                "used_outside_knowledge": allow_general_answer,
+                "abstained": False,
+                "diagnostics": final_diag,
             }
-            if include_diagnostics:
-                done["diagnostics"] = result.context.diagnostics
             yield f"data: {json.dumps(done)}\n\n"
 
         except Exception:
             logger.exception("Stream error")
+            gen_ms = int((time.perf_counter() - gen_start) * 1000)
             if full_content.strip():
                 latency_ms = int((time.time() - start_time) * 1000)
+                final_diag = _finalize_diagnostics(full_content, gen_ms, latency_ms)
                 assistant_msg = Message(
                     conversation_id=conv.id,
                     role=MessageRole.assistant,
                     content=full_content,
                     sources=sources_data,
+                    tokens_used=final_diag["tokens"]["completion_tokens"],
                     latency_ms=latency_ms,
                 )
                 db.add(assistant_msg)
                 for message in replace_messages:
                     await db.delete(message)
                 await db.commit()
+
+                _emit_structured_chat_log(
+                    conversation_id=conv.id,
+                    user_id=user.id,
+                    query=body.query,
+                    response_mode=body.response_mode.value,
+                    abstained=False,
+                    used_outside_knowledge=allow_general_answer,
+                    diagnostics=final_diag,
+                )
 
                 yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
                 done = {
@@ -679,9 +841,10 @@ async def chat(
                     "message_id": str(assistant_msg.id),
                     "conversation_id": str(conv.id),
                     "active_documents": active_documents_payload,
+                    "used_outside_knowledge": allow_general_answer,
+                    "abstained": False,
+                    "diagnostics": final_diag,
                 }
-                if include_diagnostics:
-                    done["diagnostics"] = result.context.diagnostics
                 yield f"data: {json.dumps(done)}\n\n"
                 return
 
@@ -691,17 +854,29 @@ async def chat(
             )
             if fallback_content:
                 latency_ms = int((time.time() - start_time) * 1000)
+                final_diag = _finalize_diagnostics(fallback_content, gen_ms, latency_ms)
                 assistant_msg = Message(
                     conversation_id=conv.id,
                     role=MessageRole.assistant,
                     content=fallback_content,
                     sources=sources_data,
+                    tokens_used=final_diag["tokens"]["completion_tokens"],
                     latency_ms=latency_ms,
                 )
                 db.add(assistant_msg)
                 for message in replace_messages:
                     await db.delete(message)
                 await db.commit()
+
+                _emit_structured_chat_log(
+                    conversation_id=conv.id,
+                    user_id=user.id,
+                    query=body.query,
+                    response_mode=body.response_mode.value,
+                    abstained=False,
+                    used_outside_knowledge=allow_general_answer,
+                    diagnostics=final_diag,
+                )
 
                 yield f"data: {json.dumps({'type': 'chunk', 'content': fallback_content})}\n\n"
                 yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
@@ -711,9 +886,10 @@ async def chat(
                     "message_id": str(assistant_msg.id),
                     "conversation_id": str(conv.id),
                     "active_documents": active_documents_payload,
+                    "used_outside_knowledge": allow_general_answer,
+                    "abstained": False,
+                    "diagnostics": final_diag,
                 }
-                if include_diagnostics:
-                    done["diagnostics"] = result.context.diagnostics
                 yield f"data: {json.dumps(done)}\n\n"
                 return
 

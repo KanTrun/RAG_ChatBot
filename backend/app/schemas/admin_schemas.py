@@ -1,9 +1,9 @@
-"""Admin dashboard schemas."""
+"""Admin dashboard schemas: system metrics, user management, ingestion status, and evaluation history."""
 
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SystemStats(BaseModel):
@@ -12,6 +12,44 @@ class SystemStats(BaseModel):
     total_conversations: int
     total_messages: int
     docs_by_status: dict[str, int]
+    total_questions: int = 0
+    abstention_rate: float = 0.0
+    avg_latency_ms: float = 0.0
+    avg_tokens_per_answer: float = 0.0
+
+
+class AdminUserResponse(BaseModel):
+    id: UUID
+    email: str
+    display_name: str
+    is_active: bool
+    is_superuser: bool
+    roles: list[str] = Field(default_factory=list)
+    document_count: int = 0
+    created_at: datetime | None = None
+
+
+class AdminUserUpdateRequest(BaseModel):
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class EvaluationRunSummary(BaseModel):
+    run_id: str
+    timestamp: str
+    total_questions: int
+    faithfulness: float
+    context_precision: float
+    context_recall: float
+    latency_p50_ms: float
+    latency_p95_ms: float
+    avg_tokens_per_answer: float
+    bm25_enabled: bool = True
+
+
+class EvaluationDashboardResponse(BaseModel):
+    latest: EvaluationRunSummary | None = None
+    history: list[EvaluationRunSummary] = Field(default_factory=list)
 
 
 class IngestionJobStatus(BaseModel):

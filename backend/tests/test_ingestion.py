@@ -7,7 +7,13 @@ from app.models.document import DocumentStatus
 from app.services.chunking_engine import ChunkingEngine
 from app.services.parser_factory import get_parser
 from app.services.parsers.base_parser import ParsedPage
+from app.workers.celery_app import celery_app
 from app.workers.ingestion_tasks import _process_document_async
+
+
+def test_celery_worker_registers_ingestion_process_document_task():
+    """Bug 1 regression test: celery_app must register ingestion.process_document at import time."""
+    assert "ingestion.process_document" in celery_app.tasks
 
 
 @pytest.mark.anyio

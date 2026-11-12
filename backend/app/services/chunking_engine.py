@@ -1,9 +1,8 @@
 """Structure-aware, block-first chunking for document ingestion."""
 
 from dataclasses import dataclass, field
+import re
 from uuid import UUID
-
-import tiktoken
 
 from app.services.document_structure import (
     INGESTION_VERSION,
@@ -11,6 +10,25 @@ from app.services.document_structure import (
     build_semantic_blocks,
 )
 from app.services.parsers.base_parser import ParsedPage
+
+
+class _FallbackTokenizer:
+    """Offline fallback tokenizer when tiktoken BPE cache is unavailable."""
+
+    def encode(self, text: str) -> list[str]:
+        return re.findall(r"\S+", text)
+
+    def decode(self, tokens: list[str]) -> str:
+        return " ".join(tokens)
+
+
+def _get_tokenizer():
+    try:
+        import tiktoken
+
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return _FallbackTokenizer()
 
 
 @dataclass
@@ -32,13 +50,13 @@ class ChunkingEngine:
     def __init__(
         self,
         chunk_size: int = 512,
-        chunk_overlap: int = 50,
+        chunk_overlap: int = 51,
         separators: list[str] | None = None,
     ):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.chunk_size = max(32, int(chunk_size))
+        self.chunk_overlap = max(0, min(int(chunk_overlap), self.chunk_size - 1))
         self.separators = separators or ["\n\n", "\n", ". ", " "]
-        self._tokenizer = tiktoken.get_encoding("cl100k_base")
+        self._tokenizer = _get_tokenizer()
 
     def _count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text))
@@ -63,7 +81,8 @@ class ChunkingEngine:
             # No separator found; hard split by tokens
             tokens = self._tokenizer.encode(text)
             chunks = []
-            for i in range(0, len(tokens), self.chunk_size - self.chunk_overlap):
+            step = max(1, self.chunk_size - self.chunk_overlap)
+            for i in range(0, len(tokens), step):
                 chunk_tokens = tokens[i : i + self.chunk_size]
                 chunks.append(self._tokenizer.decode(chunk_tokens))
             return chunks
@@ -122,6 +141,11 @@ class ChunkingEngine:
             page_chunks = self._split_text(block.text, self.separators)
             for child_index, chunk_text in enumerate(page_chunks):
                 token_count = self._count_tokens(chunk_text)
+                section_name = (
+                    block.section_path[-1]
+                    if block.section_path
+                    else block.metadata.get("section") or "Overview"
+                )
                 metadata = {
                     **block.metadata,
                     "document_id": str(document_id),
@@ -133,6 +157,8 @@ class ChunkingEngine:
                     "page_start": block.page_start,
                     "page_end": block.page_end,
                     "child_chunk_index": child_index,
+                    "chunk_size": self.chunk_size,
+                    "chunk_overlap": self.chunk_overlap,
                     "ingestion_version": INGESTION_VERSION,
                 }
                 contextualized_text = build_contextualized_chunk_text(chunk_text, metadata)
@@ -142,7 +168,7 @@ class ChunkingEngine:
                         content=chunk_text,
                         chunk_index=chunk_index,
                         page_number=block.page_start,
-                        section=block.section_path[-1] if block.section_path else block.metadata.get("section"),
+                        section=section_name,
                         token_count=token_count,
                         metadata=metadata,
                         contextualized_text=contextualized_text,

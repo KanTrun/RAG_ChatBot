@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Send, Paperclip } from "lucide-react";
+import { Send, Paperclip, Square } from "lucide-react";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { apiUpload, getApiErrorMessage } from "@/lib/client-api";
 import {
@@ -14,6 +14,8 @@ type ChatResponseMode = "strict_documents" | "hybrid_general";
 interface ChatInputProps {
   onSend: (message: string, responseMode: ChatResponseMode) => void;
   disabled?: boolean;
+  isStreaming?: boolean;
+  onStopGenerating?: () => void;
   onUploadComplete?: (document: UploadedDocument) => void;
   onUploadStatusChange?: (document: UploadedDocument) => void;
   responseMode: ChatResponseMode;
@@ -34,6 +36,8 @@ interface ChatUpload {
 export function ChatInput({
   onSend,
   disabled,
+  isStreaming = false,
+  onStopGenerating,
   onUploadComplete,
   onUploadStatusChange,
   responseMode,
@@ -67,11 +71,10 @@ export function ChatInput({
     if (!value.trim() || disabled) return;
     onSend(value.trim(), responseMode);
     setValue("");
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, disabled, onSend, responseMode]);
+  }, [value, disabled, onSend, responseMode, setValue]);
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -234,14 +237,26 @@ export function ChatInput({
           className="max-h-[200px] flex-1 resize-none bg-transparent text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none disabled:opacity-50"
         />
 
-        <button
-          onClick={handleSubmit}
-          disabled={!value.trim() || disabled}
-          className="mb-0.5 rounded-xl bg-linear-to-br from-accent-primary via-accent-secondary to-accent-primary-hover p-2 text-white shadow-[0_12px_30px_rgba(99,102,241,0.28)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(99,102,241,0.34)] disabled:translate-y-0 disabled:opacity-30"
-          aria-label={editLabel ? "Resend edited message" : "Send message"}
-        >
-          <Send className="h-4 w-4" />
-        </button>
+        {isStreaming && onStopGenerating ? (
+          <button
+            type="button"
+            onClick={onStopGenerating}
+            className="mb-0.5 inline-flex items-center gap-1.5 rounded-xl border border-red-500/40 bg-red-500/15 px-3 py-2 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/25"
+            aria-label="Stop generating"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+            <span>Stop</span>
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={!value.trim() || disabled}
+            className="mb-0.5 rounded-xl bg-linear-to-br from-accent-primary via-accent-secondary to-accent-primary-hover p-2 text-white shadow-[0_12px_30px_rgba(99,102,241,0.28)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(99,102,241,0.34)] disabled:translate-y-0 disabled:opacity-30"
+            aria-label={editLabel ? "Resend edited message" : "Send message"}
+          >
+            <Send className="h-4 w-4" />
+          </button>
+        )}
       </div>
       <p className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-content-tertiary">
         Press <kbd className="rounded border border-border-primary px-1">Enter</kbd> to send,{" "}

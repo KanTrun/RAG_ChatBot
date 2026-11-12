@@ -40,13 +40,16 @@ def build_grounded_fallback_answer(query: str, context_text: str) -> str | None:
         return None
 
     lead = _ensure_terminal_punctuation(selected[0]["sentence"])
+    lead_citation = f"[{selected[0]['citation']}]"
     support = [
         f"- {_ensure_terminal_punctuation(item['sentence'])} [{item['citation']}]"
         for item in selected[1:]
     ]
-    citations = "".join(f"[{item['citation']}]" for item in selected)
+    all_citations = "".join(
+        f"[{c}]" for c in dict.fromkeys(item["citation"] for item in selected)
+    )
 
-    response = f"According to the retrieved document context, {lead} {citations}".strip()
+    response = f"According to the retrieved document context, {lead} {lead_citation} {all_citations}".strip()
     if support:
         response += "\n\nSupporting evidence:\n" + "\n".join(support)
     return response
@@ -69,9 +72,13 @@ def _extract_evidence_sentences(context_text: str) -> list[dict]:
         if current_citation is None:
             continue
 
+        # Skip markdown heading lines so prose sentences are selected
+        if line.startswith("#"):
+            continue
+
         for sentence in re.split(r"(?<=[.!?])\s+", line):
             cleaned = sentence.strip()
-            if cleaned:
+            if cleaned and not cleaned.startswith("#"):
                 evidence.append({"citation": current_citation, "sentence": cleaned})
 
     return evidence

@@ -102,3 +102,9 @@ external/
 
 # Git worktrees (local development only)
 worktrees/
+
+# Local-only artifacts (AI IDE upgrade)
+RAG_ChatBot_Upgraded.zip
+backend/diag_retrieval.py
+backend/app/evaluation/evaluation_history.json
+backend/app/evaluation/evaluation_report.json

@@ -1,15 +1,28 @@
 """Context assembler: orders chunks, deduplicates, adds citations."""
 
-import logging
 from dataclasses import dataclass, field
-
-import tiktoken
+import logging
+import re
 
 from app.services.reranking_service import RankedChunk
 
 logger = logging.getLogger(__name__)
 
-_enc = tiktoken.get_encoding("cl100k_base")
+
+class _FallbackEncoding:
+    def encode(self, text: str) -> list[str]:
+        return re.findall(r"\S+", text)
+
+    def decode(self, tokens: list[str]) -> str:
+        return " ".join(tokens)
+
+
+try:
+    import tiktoken
+
+    _enc = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _enc = _FallbackEncoding()
 
 
 @dataclass
@@ -60,15 +73,10 @@ class ContextAssembler:
         prefer_document_order: bool = False,
         max_tokens: int | None = None,
     ) -> AssembledContext:
-        """Build context text with numbered citations from ranked chunks.
-
-        Chunks are already sorted by reranker score (highest first).
-        Deduplicates exact-substring overlaps and enforces token budget.
-        """
+        """Build context text with numbered citations from ranked chunks."""
         if not ranked_chunks:
             return AssembledContext(context_text="", sources=[], total_tokens=0)
 
-        # Deduplicate near-identical content (exact substring check)
         unique_chunks = self._deduplicate(ranked_chunks)
         if prefer_document_order:
             unique_chunks = sorted(
@@ -98,7 +106,6 @@ class ContextAssembler:
             page_start = meta.get("page_start") or page
             page_end = meta.get("page_end") or page
 
-            # Format chunk with citation header
             header_parts = [f"[{citation_num}] Source: {doc_title}"]
             if page_start is not None:
                 page_label = f"{page_start}" if page_start == page_end or page_end is None else f"{page_start}-{page_end}"
@@ -113,10 +120,8 @@ class ContextAssembler:
 
             block = f"{header}\n{chunk.content}\n"
 
-            # Check token budget
             block_tokens = len(_enc.encode(block))
             if total_tokens + block_tokens > token_budget:
-                # Try to fit a truncated version
                 remaining = token_budget - total_tokens
                 if remaining > 50:
                     tokens = _enc.encode(block)[:remaining]
@@ -188,7 +193,6 @@ class ContextAssembler:
             content = chunk.content.strip()
             is_dup = False
             for seen in seen_contents:
-                # Check if either is a substantial substring of the other
                 shorter, longer = sorted([content, seen], key=len)
                 if len(shorter) > 50 and shorter in longer:
                     is_dup = True

@@ -103,3 +103,25 @@ async def test_admin_reindex_all_can_scope_to_stale_documents(
     data = response.json()
     assert data["queued_documents"] == 1
     assert data["stale_only"] is True
+
+
+@pytest.mark.anyio
+async def test_admin_can_list_and_update_users(
+    async_client,
+    admin_headers,
+    test_user,
+):
+    users_resp = await async_client.get("/api/v1/admin/users", headers=admin_headers)
+    assert users_resp.status_code == 200
+    users = users_resp.json()
+    assert any(u["id"] == str(test_user.id) for u in users)
+
+    patch_resp = await async_client.patch(
+        f"/api/v1/admin/users/{test_user.id}",
+        headers=admin_headers,
+        json={"role": "editor", "is_active": False},
+    )
+    assert patch_resp.status_code == 200
+    updated = patch_resp.json()
+    assert "editor" in updated["roles"]
+    assert updated["is_active"] is False

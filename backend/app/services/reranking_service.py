@@ -1,10 +1,10 @@
-"""Reranking service using BGE-Reranker-v2-m3 cross-encoder."""
+"""Reranking service using BGE-Reranker-v2-m3 cross-encoder with hybrid lexical/semantic fallback."""
 
 import asyncio
-import logging
-import re
 from dataclasses import dataclass
 from functools import lru_cache
+import logging
+import re
 
 from app.config import get_settings
 from app.services.retrieval_section_policy import evaluate_chunk_policy
@@ -59,16 +59,7 @@ class RerankingService:
         chunks: list[dict],
         top_k: int = 5,
     ) -> list[RankedChunk]:
-        """Rerank chunks by relevance to query.
-
-        Args:
-            query: The search query.
-            chunks: List of dicts with keys: id, content, metadata.
-            top_k: Number of top results to return.
-
-        Returns:
-            Sorted list of RankedChunk (highest score first).
-        """
+        """Rerank chunks by relevance to query."""
         if not chunks:
             return []
 
@@ -79,11 +70,9 @@ class RerankingService:
         if not self._enabled:
             return self._fallback(query, chunks, top_k)
 
-        # Run model in thread to avoid blocking
         pairs = [(query, c["content"]) for c in chunks]
         scores = await asyncio.to_thread(self._model.compute_score, pairs)
 
-        # compute_score returns float for single pair, list for multiple
         if isinstance(scores, float):
             scores = [scores]
 
@@ -147,6 +136,7 @@ class RerankingService:
         original_rank_bonus = max(0.0, 0.15 - (original_rank * 0.01))
         section_bias = self._resolve_section_bias(query, chunk)
         entity_bonus = self._entity_match_bonus(query, chunk)
+        lexical_bonus = min(float(metadata.get("lexical_score") or 0.0) * 0.08, 0.16)
 
         return (
             overlap_ratio
@@ -155,6 +145,7 @@ class RerankingService:
             + original_rank_bonus
             + section_bias
             + entity_bonus
+            + lexical_bonus
         )
 
     def _apply_section_bias(self, query: str, base_score: float, chunk: dict) -> float:

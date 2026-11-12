@@ -70,10 +70,14 @@ EXTRACT_MARKERS = (
 )
 DEFINITION_MARKERS = (
     "what is",
+    "how does",
+    "how do",
     "define",
     "definition",
     "là gì",
     "la gi",
+    "hoạt động như thế nào",
+    "hoat dong nhu the nao",
     "định nghĩa",
     "dinh nghia",
     "meaning of",
@@ -94,8 +98,6 @@ FACTUAL_MARKERS = (
     "name",
 )
 MULTI_HOP_MARKERS = (
-    "how does",
-    "how do",
     "why",
     "tại sao",
     "tai sao",
@@ -105,6 +107,10 @@ MULTI_HOP_MARKERS = (
     "tổng hợp",
     "combine",
     "combined",
+    "affect",
+    "impact",
+    "influence",
+    "relate to",
 )
 
 SUMMARY_AXES = (
@@ -304,10 +310,10 @@ def detect_retrieval_intent(query: str) -> RetrievalIntent:
         return RetrievalIntent.summary
     if any(marker in normalized for marker in EXTRACT_MARKERS):
         return RetrievalIntent.extract
-    if any(marker in normalized for marker in DEFINITION_MARKERS):
-        return RetrievalIntent.definition
     if any(marker in normalized for marker in MULTI_HOP_MARKERS):
         return RetrievalIntent.multi_hop
+    if any(marker in normalized for marker in DEFINITION_MARKERS):
+        return RetrievalIntent.definition
     if any(marker in normalized for marker in FACTUAL_MARKERS):
         return RetrievalIntent.factual
     return RetrievalIntent.question

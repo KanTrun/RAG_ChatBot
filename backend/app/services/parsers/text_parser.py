@@ -1,12 +1,19 @@
-"""Plain text parser."""
+"""Plain text and Markdown parser with structure-aware section extraction."""
 
+from pathlib import Path
 import re
 
 from app.services.parsers.base_parser import BaseParser, ParsedPage
 
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(?:(?:chapter|section|part|chương|phần|mục)\s+\d+[:.\s-]*|\d+(?:\.\d+){0,3}[\).\s-]+)(.+)$",
+    re.IGNORECASE,
+)
+
 
 class TextParser(BaseParser):
-    """Parse plain text and markdown files."""
+    """Parse plain text and markdown files, extracting real sections."""
 
     @property
     def supported_extensions(self) -> list[str]:
@@ -21,38 +28,98 @@ class TextParser(BaseParser):
 
         pages: list[ParsedPage] = []
         source_type = "markdown" if file_path.lower().endswith(".md") else "text"
-        current_section = "Document"
+        doc_title = Path(file_path).stem.replace("-", " ").replace("_", " ").strip() or "Overview"
+        current_section: str | None = None
         current_lines: list[str] = []
+        explicit_heading_found = False
 
         for raw_line in content.splitlines():
             line = raw_line.strip()
             if self._is_heading(line):
-                self._flush_section(pages, current_section, current_lines, source_type)
+                explicit_heading_found = True
+                if current_lines:
+                    self._flush_section(
+                        pages,
+                        current_section or self._infer_section_title("\n".join(current_lines), doc_title, len(pages) + 1),
+                        current_lines,
+                        source_type,
+                        doc_title,
+                    )
                 current_section = self._normalize_heading(line)
-                current_lines = []
+                current_lines = [f"## {current_section}"]
                 continue
             current_lines.append(raw_line.rstrip())
 
-        self._flush_section(pages, current_section, current_lines, source_type)
+        if current_lines:
+            if not explicit_heading_found:
+                # Split headingless plain text into topic-derived sections per paragraph group
+                paragraphs = [p.strip() for p in "\n".join(current_lines).split("\n\n") if p.strip()]
+                for idx, para in enumerate(paragraphs):
+                    sec_title = self._infer_section_title(para, doc_title, idx + 1)
+                    pages.append(
+                        ParsedPage(
+                            text=f"## {sec_title}\n{para}",
+                            page_number=len(pages) + 1,
+                            metadata={
+                                "source_type": source_type,
+                                "title": doc_title,
+                                "section": sec_title,
+                            },
+                        )
+                    )
+            else:
+                self._flush_section(
+                    pages,
+                    current_section or doc_title,
+                    current_lines,
+                    source_type,
+                    doc_title,
+                )
 
         return pages
 
     @staticmethod
     def _is_heading(line: str) -> bool:
-        if not line:
+        if not line or len(line) > 100:
             return False
-        if re.match(r"^#{1,6}\s+\S+", line):
+        if _MD_HEADING_RE.match(line):
             return True
-        return (
+        if _NUMBERED_HEADING_RE.match(line) and not line.endswith((".", "!", "?")):
+            return True
+        if (
             len(line) <= 80
             and any(char.isalpha() for char in line)
             and line.upper() == line
             and not line.endswith((".", "!", "?"))
-        )
+        ):
+            return True
+        if (
+            line.endswith(":")
+            and len(line.split()) <= 8
+            and any(char.isalpha() for char in line)
+            and line[0].isupper()
+        ):
+            return True
+        return False
 
     @staticmethod
     def _normalize_heading(line: str) -> str:
-        return re.sub(r"^#{1,6}\s*", "", line).strip(" :") or "Document"
+        cleaned = re.sub(r"^#{1,6}\s*", "", line).strip(" :")
+        return cleaned or "Overview"
+
+    @staticmethod
+    def _infer_section_title(text: str, doc_title: str, index: int) -> str:
+        """Infer a concise section title from the leading sentence of a paragraph when no heading is present."""
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if not first_line:
+            return f"{doc_title} - Section {index}"
+        first_sentence = re.split(r"[.!?]", first_line)[0].strip()
+        words = first_sentence.split()
+        if 2 <= len(words) <= 7:
+            return first_sentence.strip(" :")
+        if len(words) > 7:
+            return " ".join(words[:6]).strip(" ,;:")
+        return f"{doc_title} - Section {index}"
 
     def _flush_section(
         self,
@@ -60,6 +127,7 @@ class TextParser(BaseParser):
         section: str,
         lines: list[str],
         source_type: str,
+        doc_title: str,
     ) -> None:
         text = "\n".join(lines).strip()
         if not text:
@@ -88,6 +156,7 @@ class TextParser(BaseParser):
                     page_number=len(pages) + 1,
                     metadata={
                         "source_type": source_type,
+                        "title": doc_title,
                         "section": section,
                     },
                 )

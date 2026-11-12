@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
+import logging
+import re
+import time
 from uuid import UUID
 
 import numpy as np
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+try:
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
+except ImportError:  # pragma: no cover - host CLI evaluation fallback
+    text = lambda sql: sql  # type: ignore
+    AsyncSession = object  # type: ignore
 
+from app.config import get_settings
 from app.services.answer_brief_builder import (
     build_answer_brief,
     build_profile_support_map,
@@ -23,6 +30,11 @@ from app.services.evidence_clusterer import (
     build_evidence_clusters,
     select_evidence_chunks,
 )
+from app.services.reranking_service import (
+    RankedChunk,
+    RerankingService,
+    get_reranking_service,
+)
 from app.services.retrieval_intent_service import (
     RetrievalPlan,
     build_query_variants,
@@ -30,10 +42,21 @@ from app.services.retrieval_intent_service import (
     is_profile_query,
 )
 from app.services.retrieval_section_policy import evaluate_chunk_policy
-from app.services.reranking_service import RerankingService, get_reranking_service
-from app.services.reranking_service import RankedChunk
 
 logger = logging.getLogger(__name__)
+
+_BM25_STOP_WORDS = {
+    "what", "is", "are", "was", "were", "how", "does", "do", "did",
+    "work", "works", "working", "the", "a", "an", "in", "on", "of",
+    "to", "for", "with", "by", "about", "from", "at", "as", "into",
+    "which", "where", "when", "who", "whom", "why", "can", "could",
+    "would", "should", "may", "might", "tell", "me", "explain",
+    "describe", "define", "this", "that", "these", "those", "it", "its",
+    "la", "gi", "nhu", "the", "nao", "tai", "sao", "trong", "cua",
+    "va", "cac", "nhung", "mot", "co", "duoc", "cho", "ve", "nay",
+    "do", "hay", "khong", "là", "gì", "như", "thế", "nào", "tại",
+    " của", "và", "các", "những", "một", "có", "được", "về", "này",
+}
 
 
 @dataclass
@@ -71,6 +94,25 @@ class RetrievalService:
         self.reranking_service = reranking_service or get_reranking_service()
         self.context_assembler = context_assembler or ContextAssembler()
 
+    @staticmethod
+    def _build_bm25_tsquery_string(query: str) -> str:
+        """Build a PostgreSQL tsquery string from natural language query tokens."""
+        base_query = query.split("\nFocus:")[0].strip()
+        raw_tokens = re.findall(r"\w+", base_query.lower())
+        if not raw_tokens:
+            return ""
+
+        filtered = [
+            tok for tok in raw_tokens if tok not in _BM25_STOP_WORDS and len(tok) > 1
+        ]
+        chosen = filtered if filtered else [tok for tok in raw_tokens if tok]
+        seen: list[str] = []
+        for tok in chosen:
+            safe_tok = re.sub(r"[^\w]", "", tok)
+            if safe_tok and safe_tok not in seen:
+                seen.append(safe_tok)
+        return " | ".join(seen)
+
     async def retrieve(
         self,
         query: str,
@@ -88,6 +130,10 @@ class RetrievalService:
         query_analysis: RetrievalPlan | None = None,
     ) -> RetrievalResult:
         """Run a multi-stage retrieval pipeline with evidence clustering."""
+        retrieval_start = time.perf_counter()
+        settings = get_settings()
+        bm25_enabled = bool(settings.enable_bm25)
+
         active_document_count = len(filters.document_ids) if filters and filters.document_ids else 0
         plan = query_analysis or build_retrieval_plan(query, active_document_count)
         intent = plan.intent.value
@@ -157,6 +203,8 @@ class RetrievalService:
             raise RuntimeError("all retrieval strategies failed") from retrieval_failures[0]
 
         merged = self._rrf_merge(vector_results, bm25_results)
+        retrieval_ms = int((time.perf_counter() - retrieval_start) * 1000)
+
         if not merged:
             return RetrievalResult(
                 context=AssembledContext(
@@ -165,6 +213,14 @@ class RetrievalService:
                     total_tokens=0,
                     diagnostics={
                         "intent": intent,
+                        "candidate_count": 0,
+                        "vector_candidates_count": 0,
+                        "bm25_candidates_count": 0,
+                        "bm25_used": bm25_enabled,
+                        "bm25_contributed": False,
+                        "top_k_scores": [],
+                        "retrieval_ms": retrieval_ms,
+                        "rerank_ms": 0,
                         "selected_query_variants": [label for label, _text in variant_specs],
                         "low_support_reason": plan.low_support_hint,
                     },
@@ -174,8 +230,21 @@ class RetrievalService:
                 candidate_count=0,
             )
 
+        rerank_start = time.perf_counter()
         deduped = self._deduplicate_by_embedding(merged)
         deduped = self._apply_section_policy(query, deduped)
+        available_sections = {
+            (chunk.get("metadata") or {}).get("section_path")
+            or (chunk.get("metadata") or {}).get("section")
+            for chunk in deduped
+            if (chunk.get("metadata") or {}).get("section_path")
+            or (chunk.get("metadata") or {}).get("section")
+        }
+        available_section_count = len(available_sections)
+        effective_require_multi_section = (
+            plan.require_multi_section and available_section_count >= 2
+        )
+
         chunks_for_rerank = [
             {
                 "id": str(chunk["chunk_id"]),
@@ -209,27 +278,36 @@ class RetrievalService:
             clusters,
             top_k=top_k_rerank,
             target_block_types=plan.target_block_types,
-            require_multi_section=plan.require_multi_section,
+            require_multi_section=effective_require_multi_section,
         )
         if plan.exhaustive_mode:
+            effective_min_sections = (
+                min(plan.coverage_min_sections, available_section_count)
+                if available_section_count > 0
+                else 1
+            )
             selected_chunks, exhaustive_diagnostics = self._expand_exhaustive_selection(
                 selected_chunks,
                 clusters,
                 top_k=top_k_rerank,
-                coverage_min_sections=plan.coverage_min_sections,
+                coverage_min_sections=effective_min_sections,
             )
             diagnostics["exhaustive_expansion"] = exhaustive_diagnostics
+        rerank_ms = int((time.perf_counter() - rerank_start) * 1000)
+
         confidence_chunks = selected_chunks or reranked_children
         low_confidence_reason = self._build_low_support_reason(
             plan=plan,
             confidence_chunks=confidence_chunks,
             confidence_threshold=confidence_threshold,
             selected_chunks=selected_chunks,
+            available_section_count=available_section_count,
         )
         low_confidence = low_confidence_reason is not None
 
+        final_chunks = selected_chunks or reranked_children[:top_k_rerank]
         context = self.context_assembler.assemble(
-            selected_chunks or reranked_children[:top_k_rerank],
+            final_chunks,
             prefer_document_order=prefer_document_order,
             max_tokens=context_max_tokens,
         )
@@ -245,6 +323,15 @@ class RetrievalService:
         diagnostics.update(
             {
                 "intent": intent,
+                "candidate_count": len(merged),
+                "vector_candidates_count": len({r["chunk_id"] for r in vector_results}),
+                "bm25_candidates_count": len({r["chunk_id"] for r in bm25_results}),
+                "bm25_used": bm25_enabled,
+                "bm25_contributed": len(bm25_results) > 0,
+                "top_k_scores": [round(float(c.score), 4) for c in final_chunks],
+                "available_section_count": available_section_count,
+                "retrieval_ms": retrieval_ms,
+                "rerank_ms": rerank_ms,
                 "query_classification": plan.query_classification,
                 "document_target_required": plan.document_target_required,
                 "outside_knowledge_blocked_reason": plan.outside_knowledge_blocked_reason,
@@ -547,12 +634,20 @@ class RetrievalService:
         top_k: int,
     ) -> list[dict]:
         """BM25-style full-text search via tsvector + ts_rank."""
+        if not get_settings().enable_bm25:
+            return []
+
+        tsquery_str = self._build_bm25_tsquery_string(query)
+        if not tsquery_str:
+            return []
+
+        tsvector_expr = "COALESCE(c.search_vector, to_tsvector('simple', COALESCE(c.content, '')))"
         where_clauses = [
             "d.status = 'indexed'",
             "d.owner_id = CAST(:user_id AS uuid)",
-            "c.search_vector @@ plainto_tsquery('simple', :query)",
+            f"{tsvector_expr} @@ to_tsquery('simple', :tsquery)",
         ]
-        params: dict = {"user_id": str(user_id), "query": query, "top_k": top_k}
+        params: dict = {"user_id": str(user_id), "tsquery": tsquery_str, "top_k": top_k}
 
         if filters:
             if filters.document_ids:
@@ -567,7 +662,7 @@ class RetrievalService:
             SELECT c.id, c.content, c.page_number, c.section, c.chunk_index,
                    c.embedding, c.metadata,
                    d.id AS document_id, d.title as doc_title, d.file_name,
-                   ts_rank(c.search_vector, plainto_tsquery('simple', :query)) as rank
+                   ts_rank_cd({tsvector_expr}, to_tsquery('simple', :tsquery)) as rank
             FROM document_chunks c
             JOIN documents d ON d.id = c.document_id
             WHERE {' AND '.join(where_clauses)}
@@ -810,6 +905,7 @@ class RetrievalService:
         confidence_chunks: list,
         confidence_threshold: float,
         selected_chunks: list,
+        available_section_count: int | None = None,
     ) -> str | None:
         if not confidence_chunks:
             return plan.low_support_hint
@@ -833,16 +929,26 @@ class RetrievalService:
                 f"{plan.low_support_hint} "
                 f"Top evidence score {top_score:.2f} is below threshold {confidence_threshold:.2f}."
             )
-        if plan.require_multi_section and len(unique_sections) < 2:
+        # Only enforce multi-section requirement when the document(s) actually have multiple sections
+        has_multiple_sections = (
+            True if available_section_count is None else available_section_count >= 2
+        )
+        if plan.require_multi_section and has_multiple_sections and len(unique_sections) < 2:
             return (
                 f"{plan.low_support_hint} "
                 "Retrieval did not cover enough distinct sections for a grounded synthesis."
             )
-        if plan.exhaustive_mode and len(unique_sections) < plan.coverage_min_sections:
-            return (
-                f"{plan.low_support_hint} "
-                f"Coverage only reached {len(unique_sections)} supported sections; expected at least {plan.coverage_min_sections} for an exhaustive answer."
+        if plan.exhaustive_mode:
+            required_sections = (
+                min(plan.coverage_min_sections, available_section_count)
+                if available_section_count is not None and available_section_count > 0
+                else plan.coverage_min_sections
             )
+            if len(unique_sections) < required_sections:
+                return (
+                    f"{plan.low_support_hint} "
+                    f"Coverage only reached {len(unique_sections)} supported sections; expected at least {required_sections} for an exhaustive answer."
+                )
         if block_types and block_types.issubset(LOW_VALUE_BLOCK_TYPES):
             return (
                 f"{plan.low_support_hint} "

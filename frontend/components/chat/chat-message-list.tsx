@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { MessageBubble } from "./message-bubble";
+import { MessageBubble, type RetrievalDiagnostics } from "./message-bubble";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   sources?: any[];
+  state?: "streaming" | "complete" | "error";
+  loadingModel?: boolean;
+  usedOutsideKnowledge?: boolean;
+  abstained?: boolean;
+  diagnostics?: RetrievalDiagnostics | null;
+  latency_ms?: number | null;
+  tokens_used?: number | null;
 }
 
 interface ChatMessageListProps {

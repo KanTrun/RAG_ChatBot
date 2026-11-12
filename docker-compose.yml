@@ -8,7 +8,7 @@ services:
       POSTGRES_DB: ragdb
     ports:
       - target: 5432
-        published: "${DB_HOST_PORT:-0}"
+        published: "${DB_HOST_PORT:-5432}"
         host_ip: 127.0.0.1
         protocol: tcp
     volumes:
@@ -27,7 +27,7 @@ services:
     container_name: rag-redis
     ports:
       - target: 6379
-        published: "${REDIS_HOST_PORT:-0}"
+        published: "${REDIS_HOST_PORT:-6379}"
         host_ip: 127.0.0.1
         protocol: tcp
     healthcheck:
@@ -43,7 +43,7 @@ services:
     container_name: rag-ollama
     ports:
       - target: 11434
-        published: "${OLLAMA_HOST_PORT:-0}"
+        published: "${OLLAMA_HOST_PORT:-11434}"
         host_ip: 127.0.0.1
         protocol: tcp
     volumes:
@@ -66,7 +66,8 @@ services:
       - ./backend:/app
       - backend-cache:/root/.cache
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
       DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
@@ -87,7 +88,7 @@ services:
     container_name: rag-backend
     ports:
       - target: 8000
-        published: "${BACKEND_HOST_PORT:-0}"
+        published: "${BACKEND_HOST_PORT:-8000}"
         host_ip: 127.0.0.1
         protocol: tcp
     volumes:
@@ -95,7 +96,8 @@ services:
       - backend-cache:/root/.cache
       - uploads:/app/uploads
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
       DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
@@ -106,12 +108,14 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-mxbai-embed-large}
+      FIRST_TOKEN_TIMEOUT_SECONDS: ${FIRST_TOKEN_TIMEOUT_SECONDS:-120}
+      ENABLE_BM25: ${ENABLE_BM25:-true}
       INGESTION_DISPATCH_MODE: ${INGESTION_DISPATCH_MODE:-auto}
-      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
-      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-AdminPassword123!}
       BOOTSTRAP_ADMIN_DISPLAY_NAME: ${BOOTSTRAP_ADMIN_DISPLAY_NAME:-Local Admin}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -136,7 +140,8 @@ services:
       - backend-cache:/root/.cache
       - uploads:/app/uploads
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://rag:rag@db:5432/ragdb
       DATABASE_SYNC_URL: postgresql://rag:rag@db:5432/ragdb
@@ -164,7 +169,7 @@ services:
     container_name: rag-frontend
     ports:
       - target: 3000
-        published: "${FRONTEND_HOST_PORT:-0}"
+        published: "${FRONTEND_HOST_PORT:-3000}"
         host_ip: 127.0.0.1
         protocol: tcp
     volumes:
@@ -172,13 +177,14 @@ services:
       - /app/node_modules
       - /app/.next
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       NEXT_PUBLIC_API_URL: ${FRONTEND_API_PUBLIC_URL:-}
-      NEXTAUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-}
-      AUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-}
+      NEXTAUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-http://localhost:3000}
+      AUTH_URL: ${FRONTEND_PUBLIC_ORIGIN:-http://localhost:3000}
       BACKEND_URL: http://backend:8000
-      NEXT_PUBLIC_BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      NEXT_PUBLIC_BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
     depends_on:
       backend:
         condition: service_healthy

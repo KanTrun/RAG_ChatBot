@@ -55,6 +55,7 @@ async def test_upload_document_creates_pending_record(
             "/api/v1/documents/upload",
             headers=auth_headers,
             files={"file": ("sample-article.txt", file, "text/plain")},
+            data={"chunk_size": "256", "chunk_overlap": "32"},
         )
 
     assert response.status_code == 201
@@ -64,6 +65,8 @@ async def test_upload_document_creates_pending_record(
     document = await db_session.get(Document, UUID(data["id"]))
     assert document is not None
     assert document.owner_id == test_user.id
+    assert (document.metadata_ or {}).get("chunk_size") == 256
+    assert (document.metadata_ or {}).get("chunk_overlap") == 32
 
 
 @pytest.mark.anyio
@@ -167,6 +170,21 @@ async def test_list_documents_returns_indexed_fixture(async_client, auth_headers
 
 
 @pytest.mark.anyio
+async def test_get_document_chunks_returns_chunk_list(async_client, auth_headers, indexed_document):
+    response = await async_client.get(
+        f"/api/v1/documents/{indexed_document.id}/chunks",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["document_id"] == str(indexed_document.id)
+    assert data["total_chunks"] == 1
+    assert len(data["chunks"]) == 1
+    assert "AlphaProject" in data["chunks"][0]["content"]
+
+
+@pytest.mark.anyio
 async def test_user_document_list_excludes_foreign_documents(
     async_client,
     auth_headers,
@@ -219,14 +237,23 @@ async def test_get_document_detail_returns_metadata(async_client, auth_headers, 
 
 
 @pytest.mark.anyio
-async def test_reindex_sets_pending_status(async_client, auth_headers, indexed_document):
+async def test_reindex_sets_pending_status_and_updates_chunk_config(
+    async_client,
+    auth_headers,
+    db_session,
+    indexed_document,
+):
     response = await async_client.post(
         f"/api/v1/documents/{indexed_document.id}/reindex",
         headers=auth_headers,
+        json={"chunk_size": 384, "chunk_overlap": 40},
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "pending"
+    await db_session.refresh(indexed_document)
+    assert (indexed_document.metadata_ or {}).get("chunk_size") == 384
+    assert (indexed_document.metadata_ or {}).get("chunk_overlap") == 40
 
 
 @pytest.mark.anyio

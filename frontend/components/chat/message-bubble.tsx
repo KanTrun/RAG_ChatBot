@@ -2,10 +2,35 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Copy, PencilLine, RefreshCcw, Trash2, User } from "lucide-react";
+import { Activity, Bot, Copy, Globe, PencilLine, RefreshCcw, Trash2, User } from "lucide-react";
 import { OverflowActionMenu } from "./overflow-action-menu";
 import { SourceCitation } from "./source-citation";
 import { ThinkingIndicator } from "./thinking-indicator";
+
+export interface RetrievalDiagnostics {
+  intent?: string;
+  candidate_count?: number;
+  vector_candidates_count?: number;
+  bm25_candidates_count?: number;
+  bm25_used?: boolean;
+  bm25_contributed?: boolean;
+  top_k_scores?: number[];
+  latency_breakdown_ms?: {
+    rewrite_ms?: number;
+    retrieval_ms?: number;
+    rerank_ms?: number;
+    generation_ms?: number;
+    total_ms?: number;
+  };
+  tokens?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  abstained?: boolean;
+  used_outside_knowledge?: boolean;
+  low_support_reason?: string | null;
+}
 
 interface MessageBubbleProps {
   message: {
@@ -14,6 +39,12 @@ interface MessageBubbleProps {
     content: string;
     sources?: any[];
     state?: "streaming" | "complete" | "error";
+    loadingModel?: boolean;
+    usedOutsideKnowledge?: boolean;
+    abstained?: boolean;
+    diagnostics?: RetrievalDiagnostics | null;
+    latency_ms?: number | null;
+    tokens_used?: number | null;
   };
   onCitationClick: (num: number, sources?: any[]) => void;
   onDelete?: (messageId: string) => void;
@@ -36,6 +67,10 @@ export function MessageBubble({
   const isStreaming = message.state === "streaming";
   const isError = message.state === "error";
   const showActions = !isStreaming;
+  const diag = message.diagnostics;
+  const usedOutside = Boolean(
+    message.usedOutsideKnowledge || diag?.used_outside_knowledge,
+  );
   const actionItems = isUser
     ? [
         {
@@ -106,13 +141,12 @@ export function MessageBubble({
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : isStreaming && !message.content ? (
-          <ThinkingIndicator compact />
+          <ThinkingIndicator compact loadingModel={message.loadingModel} />
         ) : (
           <div className="prose prose-sm prose-invert max-w-none text-content-primary">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
-                // Intercept citation patterns [1], [2] etc.
                 p: ({ children, ...props }) => (
                   <p {...props}>
                     {processCitations(children, onCitationClick, message.sources)}
@@ -164,14 +198,104 @@ export function MessageBubble({
             </ReactMarkdown>
           </div>
         )}
+
         {!isUser && message.sources && message.sources.length > 0 && (
-          <div className="mt-3 flex items-center gap-2 border-t border-white/8 pt-3 text-[11px] text-content-tertiary">
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/8 pt-3 text-[11px] text-content-tertiary">
             <span className="inline-flex h-5 items-center rounded-full border border-accent-citation/20 bg-accent-citation/10 px-2 font-medium text-accent-citation">
               {message.sources.length} source{message.sources.length > 1 ? "s" : ""}
             </span>
             <span>Grounded answer</span>
           </div>
         )}
+
+        {!isUser && usedOutside && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-amber-500/20 pt-3 text-[11px] text-amber-300">
+            <span className="inline-flex h-5 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 font-medium text-amber-300">
+              <Globe className="h-3 w-3" />
+              Outside knowledge used (Ngoài tài liệu)
+            </span>
+            <span className="text-content-tertiary">
+              Answered using general model knowledge because document evidence was insufficient.
+            </span>
+          </div>
+        )}
+
+        {!isUser && !isStreaming && diag && (
+          <details className="mt-3 rounded-xl border border-border-primary/70 bg-surface-secondary/60 px-3 py-2 text-xs text-content-secondary">
+            <summary className="flex cursor-pointer items-center justify-between gap-2 font-medium text-content-tertiary hover:text-content-primary">
+              <span className="inline-flex items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-accent-primary" />
+                <span>Retrieval & Latency Diagnostics</span>
+              </span>
+              <span className="text-[11px]">
+                {diag.intent ? `Intent: ${diag.intent}` : ""}
+                {diag.latency_breakdown_ms?.total_ms !== undefined
+                  ? ` · ${diag.latency_breakdown_ms.total_ms} ms`
+                  : message.latency_ms
+                    ? ` · ${message.latency_ms} ms`
+                    : ""}
+                {diag.tokens?.total_tokens !== undefined
+                  ? ` · ${diag.tokens.total_tokens} tokens`
+                  : message.tokens_used
+                    ? ` · ${message.tokens_used} tokens`
+                    : ""}
+              </span>
+            </summary>
+            <div className="mt-2 grid gap-2 border-t border-border-primary/60 pt-2 text-[11px] sm:grid-cols-2">
+              <div>
+                <p className="font-semibold text-content-primary">Retrieval</p>
+                <p>Intent: <span className="font-mono text-content-primary">{diag.intent || "question"}</span></p>
+                <p>
+                  Candidates: <span className="font-mono text-content-primary">{diag.candidate_count ?? 0}</span>{" "}
+                  (Vector: {diag.vector_candidates_count ?? 0}, BM25: {diag.bm25_candidates_count ?? 0})
+                </p>
+                <p>
+                  BM25:{" "}
+                  <span className="font-mono text-content-primary">
+                    {diag.bm25_used
+                      ? diag.bm25_contributed
+                        ? "Enabled (Matched)"
+                        : "Enabled (0 hits)"
+                      : "Disabled"}
+                  </span>
+                </p>
+                <p>
+                  Top-k Scores:{" "}
+                  <span className="font-mono text-content-primary">
+                    {diag.top_k_scores && diag.top_k_scores.length > 0
+                      ? diag.top_k_scores.map((s) => Number(s).toFixed(3)).join(", ")
+                      : "N/A"}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p className="font-semibold text-content-primary">Latency & Tokens</p>
+                {diag.latency_breakdown_ms && (
+                  <>
+                    <p>
+                      Rewrite: <span className="font-mono">{diag.latency_breakdown_ms.rewrite_ms ?? 0} ms</span> ·{" "}
+                      Retrieval: <span className="font-mono">{diag.latency_breakdown_ms.retrieval_ms ?? 0} ms</span>
+                    </p>
+                    <p>
+                      Rerank: <span className="font-mono">{diag.latency_breakdown_ms.rerank_ms ?? 0} ms</span> ·{" "}
+                      Generation: <span className="font-mono">{diag.latency_breakdown_ms.generation_ms ?? 0} ms</span>
+                    </p>
+                    <p>
+                      Total Latency: <span className="font-mono text-content-primary">{diag.latency_breakdown_ms.total_ms ?? 0} ms</span>
+                    </p>
+                  </>
+                )}
+                {diag.tokens && (
+                  <p>
+                    Tokens: <span className="font-mono text-content-primary">{diag.tokens.total_tokens ?? 0}</span>{" "}
+                    (Prompt: {diag.tokens.prompt_tokens ?? 0}, Output: {diag.tokens.completion_tokens ?? 0})
+                  </p>
+                )}
+              </div>
+            </div>
+          </details>
+        )}
+
         {!isUser && isStreaming && message.content && (
           <div className="mt-3 flex items-center gap-2 text-[11px] text-content-tertiary">
             <span className="h-1.5 w-1.5 rounded-full bg-accent-primary chat-live-dot" />

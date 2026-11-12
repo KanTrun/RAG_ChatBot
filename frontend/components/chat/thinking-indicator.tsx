@@ -10,17 +10,27 @@ const PHRASES = [
 
 interface ThinkingIndicatorProps {
   compact?: boolean;
+  loadingModel?: boolean;
 }
 
-export function ThinkingIndicator({ compact = false }: ThinkingIndicatorProps) {
+export function ThinkingIndicator({ compact = false, loadingModel = false }: ThinkingIndicatorProps) {
   const [phraseIndex, setPhraseIndex] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       setPhraseIndex((current) => (current + 1) % PHRASES.length);
     }, 1400);
-    return () => window.clearInterval(timer);
+    const elapsedTimer = window.setInterval(() => {
+      setElapsedSeconds((sec) => sec + 1);
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(elapsedTimer);
+    };
   }, []);
+
+  const showModelWarmupNotice = loadingModel || elapsedSeconds >= 4;
 
   const content = (
     <div
@@ -36,8 +46,16 @@ export function ThinkingIndicator({ compact = false }: ThinkingIndicatorProps) {
           <span className="h-2.5 w-2.5 rounded-full bg-accent-citation chat-live-dot [animation-delay:320ms]" />
         </div>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-content-primary">{PHRASES[phraseIndex]}</p>
-          <p className="text-xs text-content-tertiary">Streaming response as soon as it is ready</p>
+          <p className="text-sm font-medium text-content-primary">
+            {showModelWarmupNotice
+              ? "Đang tải model, vui lòng chờ..."
+              : PHRASES[phraseIndex]}
+          </p>
+          <p className="text-xs text-content-tertiary">
+            {showModelWarmupNotice
+              ? "Model LLM đang khởi tạo trên CPU (tối đa 120 giây cho lần gọi đầu tiên)"
+              : "Streaming response as soon as it is ready"}
+          </p>
         </div>
       </div>
     </div>

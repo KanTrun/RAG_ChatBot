@@ -9,6 +9,7 @@ import {
 } from "@/components/chat/active-document-context-bar";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
+import { type RetrievalDiagnostics } from "@/components/chat/message-bubble";
 import { SourcesPanel } from "@/components/chat/sources-panel";
 import { ApiError, apiFetch, apiJson, getApiErrorMessage } from "@/lib/client-api";
 import { type UploadedDocument } from "@/lib/document-upload";
@@ -19,6 +20,12 @@ interface Message {
   content: string;
   sources?: Source[];
   state?: "streaming" | "complete" | "error";
+  loadingModel?: boolean;
+  usedOutsideKnowledge?: boolean;
+  abstained?: boolean;
+  diagnostics?: RetrievalDiagnostics | null;
+  latency_ms?: number | null;
+  tokens_used?: number | null;
 }
 
 interface Source {
@@ -160,6 +167,23 @@ function ChatPageContent() {
   const selectedConversationId = searchParams.get("conversationId");
   const selectedDocumentIdsParam = searchParams.get("documentIds");
   const selectedDocumentIds = parseDocumentIdsParam(selectedDocumentIdsParam);
+
+  const handleStopGenerating = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsLoading(false);
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.state === "streaming"
+          ? {
+              ...m,
+              content: m.content || "Đã dừng sinh câu trả lời.",
+              state: "complete",
+            }
+          : m,
+      ),
+    );
+  }, []);
 
   const queueActiveDocumentSync = useCallback(
     (nextDocuments: ActiveDocument[]) => {
@@ -393,16 +417,21 @@ function ChatPageContent() {
             try {
               event = JSON.parse(json);
             } catch {
-              // skip malformed SSE
               continue;
             }
 
-            if (event.type === "chunk" && event.content) {
+            if (event.type === "status" && event.status === "loading_model") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMessageId ? { ...m, loadingModel: true } : m,
+                ),
+              );
+            } else if (event.type === "chunk" && event.content) {
               aiContent += event.content;
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantMessageId
-                    ? { ...m, content: aiContent, state: "streaming" }
+                    ? { ...m, content: aiContent, state: "streaming", loadingModel: false }
                     : m
                 )
               );
@@ -429,6 +458,10 @@ function ChatPageContent() {
                       ...m,
                       id: event.message_id || m.id,
                       state: "complete",
+                      loadingModel: false,
+                      usedOutsideKnowledge: Boolean(event.used_outside_knowledge),
+                      abstained: Boolean(event.abstained),
+                      diagnostics: event.diagnostics || null,
                     };
                   }
                   return m;
@@ -625,7 +658,6 @@ function ChatPageContent() {
     }
   }, []);
 
-  // Keyboard shortcut: / or Ctrl+K to focus input
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (
@@ -706,6 +738,8 @@ function ChatPageContent() {
         <ChatInput
           onSend={handleSend}
           disabled={isLoading || sessionInvalid}
+          isStreaming={isLoading}
+          onStopGenerating={handleStopGenerating}
           onUploadComplete={handleUploadComplete}
           onUploadStatusChange={handleUploadStatusChange}
           responseMode={responseMode}

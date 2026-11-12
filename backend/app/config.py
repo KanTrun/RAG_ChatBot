@@ -1,8 +1,17 @@
 from typing import Any
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, NoDecode
-from typing_extensions import Annotated
+try:
+    from pydantic import field_validator
+    from pydantic_settings import BaseSettings, NoDecode
+    from typing_extensions import Annotated
+
+    _PYDANTIC_V2 = True
+except ImportError:
+    from pydantic import BaseSettings, validator as field_validator  # type: ignore
+
+    _PYDANTIC_V2 = False
+    NoDecode = Any  # type: ignore
+    Annotated = Any  # type: ignore
 
 
 class Settings(BaseSettings):
@@ -16,19 +25,26 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # CORS
-    backend_cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+    backend_cors_origins: list[str] = ["http://localhost:3000"]
 
-    @field_validator("backend_cors_origins", mode="before")
-    @classmethod
-    def parse_backend_cors_origins(cls, value: Any) -> list[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    if _PYDANTIC_V2:
+        @field_validator("backend_cors_origins", mode="before")
+        @classmethod
+        def parse_backend_cors_origins(cls, value: Any) -> list[str]:
+            if isinstance(value, str):
+                return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return value
+    else:
+        @field_validator("backend_cors_origins", pre=True)  # type: ignore
+        def parse_backend_cors_origins(cls, value: Any) -> list[str]:
+            if isinstance(value, str):
+                return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return value
 
     # App
     debug: bool = True
     log_level: str = "info"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
 
     # Embedding
     embedding_provider: str = "ollama"
@@ -39,12 +55,17 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: str = "ollama"
     llm_model: str = "qwen2.5:7b"
+    first_token_timeout_seconds: int = 120
+    stream_chunk_timeout_seconds: int = 60
+    ollama_warmup_on_startup: bool = True
+    strict_startup_model_check: bool = False
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-pro"
 
-    # Reranker
+    # Retrieval & Reranker
+    enable_bm25: bool = True
     reranker_provider: str = "bge-reranker"  # "bge-reranker" or "none"
     bge_reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
@@ -67,6 +88,7 @@ class Settings(BaseSettings):
 
     # Rate limiting (requests per minute)
     rate_limit_chat: int = 30
+    rate_limit_upload: int = 10
     rate_limit_default: int = 100
 
     # Chunking
@@ -76,7 +98,13 @@ class Settings(BaseSettings):
     # Ingestion dispatch
     ingestion_dispatch_mode: str = "auto"
 
-    model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
+    if _PYDANTIC_V2:
+        model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
+    else:
+        class Config:
+            env_file = ".env"
+            case_sensitive = False
+            extra = "ignore"
 
 
 _settings: Settings | None = None

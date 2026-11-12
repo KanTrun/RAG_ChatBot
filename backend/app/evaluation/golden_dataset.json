@@ -1,25 +1,716 @@
 {
-  "description": "Golden Q&A dataset for RAG evaluation. Expand to 50+ pairs for meaningful metrics.",
+  "description": "Golden Q&A benchmark dataset (52 pairs) for AlphaProject RAG ChatBot evaluation.",
+  "version": "2.0.0",
+  "documents": [
+    "tests/fixtures/sample-article.txt",
+    "tests/fixtures/rag-architecture-guide.md"
+  ],
   "questions": [
     {
-      "question": "What is the purpose of this system?",
-      "ground_truth": "This system is a RAG-based AI chatbot that answers questions from private documents using retrieval-augmented generation."
+      "id": "qa-001",
+      "question": "What is hybrid search?",
+      "related_document": "sample-article.txt",
+      "section": "RAG Systems & Hybrid Search",
+      "ground_truth": "Hybrid search uses vector similarity and BM25 keyword search to retrieve relevant document chunks.",
+      "expected_keywords": [
+        "vector",
+        "similarity",
+        "bm25",
+        "keyword"
+      ],
+      "expect_abstention": false
     },
     {
-      "question": "What document formats are supported?",
-      "ground_truth": "The system supports PDF, DOCX, TXT, MD, and HTML document formats."
+      "id": "qa-002",
+      "question": "How does hybrid search work?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Hybrid search executes both vector cosine similarity search and BM25 lexical full-text search, merges the candidates via Reciprocal Rank Fusion (RRF, k=60), deduplicates near-identical chunks, and reranks the top candidates.",
+      "expected_keywords": [
+        "vector",
+        "bm25",
+        "reciprocal",
+        "rank",
+        "fusion",
+        "rerank"
+      ],
+      "expect_abstention": false
     },
     {
-      "question": "How does the retrieval pipeline work?",
-      "ground_truth": "The retrieval pipeline uses hybrid search combining BM25 full-text search with vector similarity search, merges results via Reciprocal Rank Fusion, then reranks with a cross-encoder model."
+      "id": "qa-003",
+      "question": "What does the test article mention about AlphaProject?",
+      "related_document": "sample-article.txt",
+      "section": "RAG Systems & Hybrid Search",
+      "ground_truth": "The test article mentions AlphaProject, Vietnamese support, citations, and access control, alongside RAG systems combining retrieval and generation.",
+      "expected_keywords": [
+        "alphaproject",
+        "vietnamese",
+        "citations",
+        "access",
+        "control"
+      ],
+      "expect_abstention": false
     },
     {
-      "question": "What embedding model is used?",
-      "ground_truth": "BGE-M3 is used for embeddings, producing both dense (1024-dim) and sparse vectors in a single forward pass."
+      "id": "qa-004",
+      "question": "What can administrators and viewers do in the system?",
+      "related_document": "sample-article.txt",
+      "section": "Administrators can upload documents",
+      "ground_truth": "Administrators can upload documents, while viewers can ask grounded questions and receive answers with source citations.",
+      "expected_keywords": [
+        "administrators",
+        "upload",
+        "viewers",
+        "citations"
+      ],
+      "expect_abstention": false
     },
     {
-      "question": "How are documents chunked?",
-      "ground_truth": "Documents are chunked using recursive character splitting with a default size of 512 tokens and 10% overlap."
+      "id": "qa-005",
+      "question": "What is the purpose of AlphaProject RAG ChatBot?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "System Overview and Architecture",
+      "ground_truth": "AlphaProject RAG ChatBot is a local-first Retrieval-Augmented Generation web application that answers questions strictly grounded in uploaded private documents with inline citations.",
+      "expected_keywords": [
+        "local-first",
+        "retrieval-augmented",
+        "documents",
+        "citations"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-006",
+      "question": "What document file formats are supported for upload?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "The ingestion pipeline supports five document formats: PDF (.pdf), DOCX (.docx), TXT (.txt), Markdown (.md), and HTML (.html).",
+      "expected_keywords": [
+        "pdf",
+        "docx",
+        "txt",
+        "md",
+        "html"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-007",
+      "question": "What is the maximum file size allowed for document uploads?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "Uploaded files are validated against a maximum file size limit of 50MB.",
+      "expected_keywords": [
+        "50mb",
+        "maximum",
+        "upload"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-008",
+      "question": "How are duplicate document uploads detected?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "Uploaded documents are deduplicated per owner using a SHA-256 content hash stored in content_hash.",
+      "expected_keywords": [
+        "sha-256",
+        "content_hash",
+        "deduplicated"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-009",
+      "question": "What are the default chunk size and chunk overlap values?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "The ChunkingEngine uses a default chunk_size of 512 tokens and a chunk_overlap of 51 tokens (10% overlap).",
+      "expected_keywords": [
+        "512",
+        "51",
+        "chunk_size",
+        "chunk_overlap"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-010",
+      "question": "Which tokenizer encoding is used to measure chunk token counts?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "Chunk token counts are measured using the cl100k_base tokenizer encoding.",
+      "expected_keywords": [
+        "cl100k_base",
+        "tokens"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-011",
+      "question": "What range of chunk_size and chunk_overlap can users configure?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "Users and administrators can customize chunk_size from 64 to 4096 tokens and chunk_overlap from 0 to 1024 tokens.",
+      "expected_keywords": [
+        "64",
+        "4096",
+        "1024",
+        "chunk_size"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-012",
+      "question": "What structural metadata does the parser preserve for each semantic block?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Document Ingestion and Structure-Aware Chunking",
+      "ground_truth": "The parser preserves section_path, heading_level, page_number, and semantic block_type such as method, results, procedure, requirements, acknowledgement, and references.",
+      "expected_keywords": [
+        "section_path",
+        "heading_level",
+        "page_number",
+        "block_type"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-013",
+      "question": "Which database and extension are used to store vector embeddings?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "PostgreSQL 16 with the pgvector extension stores document chunks and embeddings in the document_chunks table.",
+      "expected_keywords": [
+        "postgresql",
+        "pgvector",
+        "document_chunks"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-014",
+      "question": "What is the vector dimension of the embedding column in document_chunks?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Each chunk stores a 1024-dimensional dense vector in the embedding column defined as Vector(1024).",
+      "expected_keywords": [
+        "1024",
+        "vector",
+        "embedding"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-015",
+      "question": "What index type and parameters are used for vector similarity search?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Vector similarity search uses an HNSW cosine index named ix_chunks_embedding_hnsw configured with m = 16 and ef_construction = 200.",
+      "expected_keywords": [
+        "hnsw",
+        "ix_chunks_embedding_hnsw",
+        "16",
+        "200"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-016",
+      "question": "Which Ollama embedding model is used for local embeddings?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Local embeddings are generated by Ollama using the mxbai-embed-large model, producing 1024-dimensional vectors.",
+      "expected_keywords": [
+        "ollama",
+        "mxbai-embed-large",
+        "1024"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-017",
+      "question": "How is the search_vector column indexed and populated for BM25 search?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "The search_vector TSVECTOR column is indexed with a GIN index (ix_chunks_search_vector_gin) and populated via the trg_chunks_search_vector trigger and to_tsvector('simple', content).",
+      "expected_keywords": [
+        "search_vector",
+        "tsvector",
+        "gin",
+        "ix_chunks_search_vector_gin",
+        "trg_chunks_search_vector"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-018",
+      "question": "How are vector and BM25 search results combined during hybrid retrieval?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Vector and BM25 candidate lists are combined using Reciprocal Rank Fusion (RRF) with constant k = 60.",
+      "expected_keywords": [
+        "reciprocal",
+        "rank",
+        "fusion",
+        "rrf",
+        "60"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-019",
+      "question": "What cosine similarity threshold is used to deduplicate near-duplicate chunks?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Near-duplicate chunks with cosine similarity above 0.95 are removed during deduplication.",
+      "expected_keywords": [
+        "0.95",
+        "cosine",
+        "deduplicated"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-020",
+      "question": "How does section policy handle boilerplate sections like acknowledgements?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Boilerplate sections such as acknowledgements and table of contents are demoted by section policy before reranking.",
+      "expected_keywords": [
+        "boilerplate",
+        "acknowledgements",
+        "demoted",
+        "section"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-021",
+      "question": "How many candidates are reranked in the default retrieval pipeline?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "The retrieval pipeline reranks the top-20 candidates into the top-5 evidence clusters.",
+      "expected_keywords": [
+        "top-20",
+        "top-5",
+        "reranked"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-022",
+      "question": "What are the seven query intents supported by RetrievalIntentService?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "The seven intents are definition, factual, summary, compare, extract, multi_hop, and question.",
+      "expected_keywords": [
+        "definition",
+        "factual",
+        "summary",
+        "compare",
+        "extract",
+        "multi_hop",
+        "question"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-023",
+      "question": "How are 'how does' and 'how do' questions classified by the intent service?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "Questions starting with 'what is', 'how does', or 'how do' are classified as definition queries with a confidence threshold of 0.30 and single-section support allowed.",
+      "expected_keywords": [
+        "how does",
+        "definition",
+        "0.30",
+        "single-section"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-024",
+      "question": "When is multi-section evidence required during retrieval?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "Multi-section evidence is only required when the query intent requires synthesis across sections and the target document actually contains at least two distinct sections.",
+      "expected_keywords": [
+        "multi-section",
+        "two",
+        "distinct",
+        "sections"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-025",
+      "question": "Which local LLM model is used for text generation via Ollama?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "Local text generation runs on Ollama using the qwen2.5:7b large language model.",
+      "expected_keywords": [
+        "ollama",
+        "qwen2.5:7b"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-026",
+      "question": "Why is the first-token timeout set to 120 seconds?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "Loading qwen2.5:7b (4.7GB) on CPU can take longer than 30 seconds on the first request, so the backend enforces a 120-second first-token timeout and performs startup model warmup.",
+      "expected_keywords": [
+        "120",
+        "qwen2.5:7b",
+        "4.7gb",
+        "cpu",
+        "warmup"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-027",
+      "question": "What is the difference between strict_documents and hybrid_general response modes?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "strict_documents (Document only) answers strictly from document context and abstains when support is low, while hybrid_general allows outside knowledge and badges the UI when outside knowledge is used.",
+      "expected_keywords": [
+        "strict_documents",
+        "hybrid_general",
+        "abstains",
+        "outside"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-028",
+      "question": "What roles are supported by the RBAC system?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "RBAC supports three core roles: admin (full system, user, evaluation, and document management), editor (upload and manage documents), and viewer (chat and view owned documents).",
+      "expected_keywords": [
+        "admin",
+        "editor",
+        "viewer",
+        "rbac"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-029",
+      "question": "What are the API rate limits for chat, document upload, and general endpoints?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "Rate limiting enforces 30 requests per minute for /api/v1/chat, 10 requests per minute for /api/v1/documents/upload, and 100 requests per minute for general endpoints.",
+      "expected_keywords": [
+        "30",
+        "10",
+        "100",
+        "chat",
+        "upload"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-030",
+      "question": "What components does the /health endpoint verify?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "The /health endpoint checks four components: PostgreSQL (pgvector), Redis (PING), Ollama (mxbai-embed-large and qwen2.5:7b model readiness), and the Celery worker (ingestion.process_document registration).",
+      "expected_keywords": [
+        "postgresql",
+        "redis",
+        "ollama",
+        "celery",
+        "ingestion.process_document"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-031",
+      "question": "What fields are recorded in STRUCTURED_CHAT_LOG for each chat query?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "STRUCTURED_CHAT_LOG records query intent, candidate counts, top-k scores, BM25 contribution, step-by-step latency (rewrite_ms, retrieval_ms, rerank_ms, generation_ms, total_ms), token usage, and abstention status.",
+      "expected_keywords": [
+        "structured_chat_log",
+        "rewrite_ms",
+        "retrieval_ms",
+        "rerank_ms",
+        "generation_ms"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-032",
+      "question": "Which Celery task name processes asynchronous document ingestion?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "The Celery worker registers and executes the task named ingestion.process_document.",
+      "expected_keywords": [
+        "ingestion.process_document",
+        "celery"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-033",
+      "question": "What frontend framework and React version are used in the web application?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "System Overview and Architecture",
+      "ground_truth": "The frontend uses Next.js 15 and React 19 with a dark-mode workspace interface and Server-Sent Events (SSE) token streaming.",
+      "expected_keywords": [
+        "next.js",
+        "15",
+        "react",
+        "19",
+        "sse"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-034",
+      "question": "What backend frameworks and task queue technologies power AlphaProject?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "System Overview and Architecture",
+      "ground_truth": "The backend uses Python, FastAPI, SQLAlchemy 2.0 async, Alembic migrations, and Celery distributed workers backed by Redis 7.",
+      "expected_keywords": [
+        "fastapi",
+        "sqlalchemy",
+        "alembic",
+        "celery",
+        "redis"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-035",
+      "question": "How does the system handle questions when evidence is missing in strict_documents mode?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "System Overview and Architecture",
+      "ground_truth": "When retrieved evidence is insufficient in strict_documents mode, the assistant abstains rather than hallucinating unsupported claims.",
+      "expected_keywords": [
+        "strict_documents",
+        "abstains",
+        "insufficient"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-036",
+      "question": "What PostgreSQL text search function is used to rank BM25 lexical matches?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "Lexical matches are ranked using PostgreSQL ts_rank_cd with to_tsquery('simple', ...) against the search_vector column.",
+      "expected_keywords": [
+        "ts_rank_cd",
+        "to_tsquery",
+        "simple",
+        "search_vector"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-037",
+      "question": "What is the inter-chunk stream timeout after the first token is received?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "After the 120-second first-token timeout, the backend enforces a 60-second inter-chunk stream timeout.",
+      "expected_keywords": [
+        "60",
+        "120",
+        "timeout"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-038",
+      "question": "How are user passwords and sessions secured in the authentication layer?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "Authentication uses JWT access and refresh tokens combined with bcrypt password hashing.",
+      "expected_keywords": [
+        "jwt",
+        "refresh",
+        "bcrypt"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-039",
+      "question": "Does the system support Vietnamese language documents and queries?",
+      "related_document": "sample-article.txt",
+      "section": "RAG Systems & Hybrid Search",
+      "ground_truth": "Yes, the test article explicitly mentions AlphaProject, Vietnamese support, citations, and access control.",
+      "expected_keywords": [
+        "vietnamese",
+        "alphaproject",
+        "citations"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-040",
+      "question": "What is the HNSW ef_construction parameter on ix_chunks_embedding_hnsw?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "The HNSW cosine index ix_chunks_embedding_hnsw is configured with m = 16 and ef_construction = 200.",
+      "expected_keywords": [
+        "ef_construction",
+        "200",
+        "ix_chunks_embedding_hnsw"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-041",
+      "question": "Which database trigger automatically updates search_vector on document_chunks?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "The trigger named trg_chunks_search_vector automatically maintains the search_vector column on document_chunks.",
+      "expected_keywords": [
+        "trg_chunks_search_vector",
+        "search_vector"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-042",
+      "question": "What environment variable controls the first-token timeout on CPU?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "The environment variable FIRST_TOKEN_TIMEOUT_SECONDS=120 controls the 120-second first-token wait limit.",
+      "expected_keywords": [
+        "first_token_timeout_seconds",
+        "120"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-043",
+      "question": "Summarize the vector database and hybrid retrieval pipeline.",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Vector Database and Hybrid Retrieval Pipeline",
+      "ground_truth": "PostgreSQL 16 with pgvector stores 1024-dim mxbai-embed-large embeddings in document_chunks with an HNSW index and a GIN-indexed search_vector column. Retrieval combines vector cosine search and BM25 lexical search via RRF (k=60), deduplicates at 0.95 cosine similarity, applies section policy, and reranks top-20 into top-5.",
+      "expected_keywords": [
+        "pgvector",
+        "1024",
+        "mxbai-embed-large",
+        "rrf",
+        "bm25"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-044",
+      "question": "Compare the admin, editor, and viewer roles in the RBAC system.",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "The admin role has full access to system metrics, users, evaluations, and all documents; the editor role can upload and manage documents; the viewer role can chat and view owned documents.",
+      "expected_keywords": [
+        "admin",
+        "editor",
+        "viewer",
+        "documents"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-045",
+      "question": "Extract the exact latency metrics logged in STRUCTURED_CHAT_LOG.",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Security, RBAC, Rate Limiting, and Operations",
+      "ground_truth": "The latency metrics logged in STRUCTURED_CHAT_LOG are rewrite_ms, retrieval_ms, rerank_ms, generation_ms, and total_ms.",
+      "expected_keywords": [
+        "rewrite_ms",
+        "retrieval_ms",
+        "rerank_ms",
+        "generation_ms",
+        "total_ms"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-046",
+      "question": "Why does the backend run a model warmup task during startup?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "Intent Detection and Grounded Generation",
+      "ground_truth": "Because loading qwen2.5:7b (4.7GB) on CPU takes longer than 30 seconds on initial load, startup warmup preloads the model into memory to avoid first-request stream timeouts.",
+      "expected_keywords": [
+        "qwen2.5:7b",
+        "cpu",
+        "warmup",
+        "30",
+        "120"
+      ],
+      "expect_abstention": false
+    },
+    {
+      "id": "qa-047",
+      "question": "What is the capital of France?",
+      "related_document": "sample-article.txt",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
+    },
+    {
+      "id": "qa-048",
+      "question": "Who won the FIFA World Cup in 2022?",
+      "related_document": "sample-article.txt",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
+    },
+    {
+      "id": "qa-049",
+      "question": "What is the boiling point of liquid nitrogen in Kelvin?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
+    },
+    {
+      "id": "qa-050",
+      "question": "How do you bake a sourdough bread loaf at home?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
+    },
+    {
+      "id": "qa-051",
+      "question": "What is the stock ticker symbol of Apple Inc. on NASDAQ?",
+      "related_document": "sample-article.txt",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
+    },
+    {
+      "id": "qa-052",
+      "question": "What is the population of Tokyo in 2026?",
+      "related_document": "rag-architecture-guide.md",
+      "section": "None (Out of Scope)",
+      "ground_truth": "I could not find enough support in the current document context to answer that.",
+      "expected_keywords": [
+        "could not find enough support"
+      ],
+      "expect_abstention": true
     }
   ]
 }

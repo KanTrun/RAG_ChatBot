@@ -1,8 +1,8 @@
 """Error handling and rate limiting middleware."""
 
+from collections import defaultdict
 import logging
 import time
-from collections import defaultdict
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -42,33 +42,43 @@ def register_error_handlers(app: FastAPI) -> None:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory sliding window rate limiter."""
+    """Sliding window rate limiter for chat, upload, and general API endpoints."""
 
     def __init__(self, app: FastAPI):
         super().__init__(app)
         settings = get_settings()
         self.chat_limit = settings.rate_limit_chat
+        self.upload_limit = settings.rate_limit_upload
         self.default_limit = settings.rate_limit_default
         self.window = 60  # seconds
         self._requests: dict[str, list[float]] = defaultdict(list)
 
+    @staticmethod
+    def _extract_client_identity(request: Request) -> str:
+        auth_header = request.headers.get("authorization") or ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                return f"token:{token[-24:]}"
+        return request.client.host if request.client else "unknown"
+
     async def dispatch(self, request: Request, call_next):
-        # Identify client (IP-based for now; Phase 6 switches to user ID)
-        client_ip = request.client.host if request.client else "unknown"
+        client_id = self._extract_client_identity(request)
         path = request.url.path
 
-        # Pick limit based on route
         if "/chat" in path:
             limit = self.chat_limit
+            bucket = "chat"
         elif "/upload" in path:
-            limit = 10
+            limit = self.upload_limit
+            bucket = "upload"
         else:
             limit = self.default_limit
+            bucket = path
 
-        key = f"{client_ip}:{path}"
+        key = f"{client_id}:{bucket}"
         now = time.time()
 
-        # Clean old entries
         self._requests[key] = [
             t for t in self._requests[key] if t > now - self.window
         ]
@@ -77,7 +87,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             retry_after = int(self.window - (now - self._requests[key][0]))
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                content={"detail": "Rate limit exceeded", "code": "rate_limited"},
+                content={
+                    "detail": f"Rate limit exceeded ({limit} requests/min for {bucket}). Please wait before retrying.",
+                    "code": "rate_limited",
+                },
                 headers={"Retry-After": str(max(1, retry_after))},
             )
 

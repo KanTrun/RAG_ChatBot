@@ -6,6 +6,8 @@ export interface Document {
   file_size: number;
   status: string;
   total_chunks: number;
+  error_message?: string | null;
+  metadata_?: Record<string, any> | null;
   created_at: string;
 }
 
@@ -31,10 +33,10 @@ export function formatDocumentSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function getDocumentStatusDescription(status: string) {
+export function getDocumentStatusDescription(status: string, errorMessage?: string | null) {
   if (status === "pending") return "Queued for indexing";
   if (status === "processing") return "Indexing in progress";
   if (status === "indexed") return "Ready for chat retrieval";
-  if (status === "failed") return "Re-index or upload again";
+  if (status === "failed") return errorMessage || "Re-index or upload again";
   return "Status unavailable";
 }

@@ -4,12 +4,23 @@ import pytest
 
 from app.services.answer_brief_builder import build_answer_brief
 from app.services.context_assembler import SourceReference
-from app.services.evidence_clusterer import build_evidence_clusters, build_summary_subqueries, select_evidence_chunks
-from app.services.embedding_service import EmbeddingResult, OllamaEmbeddingService, OpenAIEmbeddingService
+from app.services.embedding_service import (
+    EmbeddingResult,
+    OllamaEmbeddingService,
+    OpenAIEmbeddingService,
+)
+from app.services.evidence_clusterer import (
+    build_evidence_clusters,
+    build_summary_subqueries,
+    select_evidence_chunks,
+)
 from app.services.grounded_answer_fallback import build_grounded_fallback_answer
-from app.services.reranking_service import RerankingService
-from app.services.reranking_service import RankedChunk
-from app.services.retrieval_intent_service import RetrievalIntent, build_retrieval_plan
+from app.services.reranking_service import RankedChunk, RerankingService
+from app.services.retrieval_intent_service import (
+    RetrievalIntent,
+    build_retrieval_plan,
+    detect_retrieval_intent,
+)
 from app.services.retrieval_section_policy import evaluate_chunk_policy
 from app.services.retrieval_service import RetrievalService
 
@@ -122,6 +133,77 @@ async def test_retrieval_returns_indexed_document_with_fake_embedding(
 
     assert result.candidate_count >= 1
     assert "AlphaProject" in result.context.context_text
+    assert result.context.diagnostics["bm25_used"] is True
+    assert result.context.diagnostics["bm25_contributed"] is True
+
+
+def test_how_does_query_is_classified_as_definition_not_multi_hop():
+    """Bug 3 regression test: 'How does X work?' must be definition, not multi_hop."""
+    assert detect_retrieval_intent("How does hybrid search work?") == RetrievalIntent.definition
+    assert detect_retrieval_intent("How do RAG systems retrieve context?") == RetrievalIntent.definition
+
+    plan = build_retrieval_plan("How does hybrid search work?", active_document_count=1)
+    assert plan.intent == RetrievalIntent.definition
+    assert plan.require_multi_section is False
+
+
+def test_single_section_document_is_not_rejected_for_multi_section_plan():
+    """Bug 3 regression test: single-section documents must not fail multi-section check."""
+    plan = build_retrieval_plan("Why does the system combine BM25 and vector search?", active_document_count=1)
+    assert plan.intent == RetrievalIntent.multi_hop
+    assert plan.require_multi_section is True
+
+    chunk = RankedChunk(
+        chunk_id="c1",
+        content="Hybrid search combines BM25 keyword retrieval and vector similarity.",
+        score=0.73,
+        original_rank=0,
+        metadata={"section": "Document", "section_path": "Document", "block_type": "method"},
+    )
+    reason = RetrievalService._build_low_support_reason(
+        plan=plan,
+        confidence_chunks=[chunk],
+        confidence_threshold=plan.confidence_threshold,
+        selected_chunks=[chunk],
+        available_section_count=1,
+    )
+    assert reason is None
+
+
+def test_bm25_tsquery_builder_strips_question_words_and_focus_instructions():
+    """Bug 4 regression test: BM25 query builder must strip question stopwords and Focus suffixes."""
+    tsquery = RetrievalService._build_bm25_tsquery_string(
+        "What is hybrid search?\nFocus: explicit definition or introductory explanation"
+    )
+    assert tsquery == "hybrid | search"
+
+    how_tsquery = RetrievalService._build_bm25_tsquery_string("How does hybrid search work?")
+    assert how_tsquery == "hybrid | search"
+
+
+@pytest.mark.anyio
+async def test_bm25_search_finds_chunks_when_query_contains_document_keywords(
+    db_session,
+    indexed_document,
+    test_user,
+):
+    """Bug 4 regression test: _bm25_search must return non-empty results for keyword queries."""
+    service = RetrievalService(
+        session=db_session,
+        embedding_service=FakeEmbeddingService(),
+    )
+
+    bm25_hits = await service._bm25_search(
+        query="What is AlphaProject hybrid retrieval?",
+        user_id=test_user.id,
+        user_role_ids=[role.id for role in test_user.roles],
+        filters=None,
+        top_k=5,
+    )
+
+    assert len(bm25_hits) >= 1
+    assert "AlphaProject" in bm25_hits[0]["content"]
+    assert bm25_hits[0]["metadata"]["lexical_score"] > 0
 
 
 def test_fallback_reranker_prefers_chunks_that_match_the_question():

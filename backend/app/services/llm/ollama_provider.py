@@ -1,10 +1,12 @@
 """Ollama LLM provider (local models via HTTP API)."""
 
+import json
 import logging
 from typing import AsyncIterator
 
 import httpx
 
+from app.config import get_settings
 from app.services.llm.base_provider import LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,11 @@ class OllamaProvider:
         self.base_url = base_url.rstrip("/")
         self.default_model = model or "qwen2.5:7b"
 
+    def _get_timeout(self) -> httpx.Timeout:
+        settings = get_settings()
+        read_timeout = float(max(settings.first_token_timeout_seconds, 120))
+        return httpx.Timeout(read_timeout, connect=10.0)
+
     async def generate(
         self,
         messages: list[dict],
@@ -26,7 +33,7 @@ class OllamaProvider:
     ) -> str:
         cfg = config or _DEFAULT_CONFIG
         payload = self._build_payload(messages, cfg, stream=False)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=self._get_timeout()) as client:
             resp = await client.post(f"{self.base_url}/api/chat", json=payload)
             resp.raise_for_status()
             return resp.json()["message"]["content"]
@@ -38,12 +45,11 @@ class OllamaProvider:
     ) -> AsyncIterator[str]:
         cfg = config or _DEFAULT_CONFIG
         payload = self._build_payload(messages, cfg, stream=True)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=self._get_timeout()) as client:
             async with client.stream(
                 "POST", f"{self.base_url}/api/chat", json=payload
             ) as resp:
                 resp.raise_for_status()
-                import json
 
                 async for line in resp.aiter_lines():
                     if not line:

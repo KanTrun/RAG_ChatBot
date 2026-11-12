@@ -68,9 +68,20 @@ export async function apiJson<T>(path: string, init: RequestInit = {}): Promise<
   return response.json() as Promise<T>;
 }
 
-export async function apiUpload<T>(path: string, file: File): Promise<T> {
+export async function apiUpload<T>(
+  path: string,
+  file: File,
+  extraFields?: Record<string, string | number | undefined>,
+): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
+  if (extraFields) {
+    for (const [key, value] of Object.entries(extraFields)) {
+      if (value !== undefined && value !== null && value !== "") {
+        formData.append(key, String(value));
+      }
+    }
+  }
   return apiJson<T>(path, {
     method: "POST",
     body: formData,
