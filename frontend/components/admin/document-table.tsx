@@ -63,6 +63,7 @@ export function DocumentTable({
   const [showReindexConfig, setShowReindexConfig] = useState(false);
   const [inspectingChunks, setInspectingChunks] = useState<DocumentChunksPayload | null>(null);
   const [loadingChunksId, setLoadingChunksId] = useState<string | null>(null);
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
   const requestIdRef = useRef(0);
   const pageSize = 20;
   const canStartChat = mode === "user" && typeof onStartChat === "function";
@@ -108,7 +109,7 @@ export function DocumentTable({
 
     const timer = window.setInterval(() => {
       void loadDocuments();
-    }, 4000);
+    }, 3000);
 
     return () => window.clearInterval(timer);
   }, [docs, loadDocuments]);
@@ -148,6 +149,46 @@ export function DocumentTable({
       onChanged?.();
     } catch (err) {
       setError(getApiErrorMessage(err));
+    }
+  }
+
+  async function handleBulkReindex() {
+    if (selectedDocumentIds.length === 0 || bulkActionBusy) return;
+    setBulkActionBusy(true);
+    setError("");
+    const basePath = getDocumentBasePath(mode);
+    try {
+      await Promise.all(
+        selectedDocumentIds.map((id) =>
+          apiJson<Document>(`${basePath}/${id}/reindex`, { method: "POST" }),
+        ),
+      );
+      await loadDocuments();
+      onChanged?.();
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (selectedDocumentIds.length === 0 || bulkActionBusy) return;
+    if (!confirm(`Delete ${selectedDocumentIds.length} selected documents permanently?`)) return;
+    setBulkActionBusy(true);
+    setError("");
+    const basePath = getDocumentBasePath(mode);
+    try {
+      await Promise.all(
+        selectedDocumentIds.map((id) => apiJson<void>(`${basePath}/${id}`, { method: "DELETE" })),
+      );
+      setSelectedDocumentIds([]);
+      await loadDocuments();
+      onChanged?.();
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    } finally {
+      setBulkActionBusy(false);
     }
   }
 
@@ -226,6 +267,29 @@ export function DocumentTable({
             <MessageSquare className="h-3.5 w-3.5" />
             {selectedDocumentIds.length > 1 ? "Chat with selected docs" : "Chat with selected doc"}
           </button>
+        )}
+
+        {selectedDocumentIds.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => void handleBulkReindex()}
+              disabled={bulkActionBusy}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border-primary bg-surface-secondary px-2.5 py-1.5 text-xs text-content-secondary hover:text-content-primary disabled:opacity-40"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span>Re-index ({selectedDocumentIds.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleBulkDelete()}
+              disabled={bulkActionBusy}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-400 hover:bg-red-500/20 disabled:opacity-40"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              <span>Delete ({selectedDocumentIds.length})</span>
+            </button>
+          </>
         )}
       </div>
 
@@ -318,7 +382,7 @@ export function DocumentTable({
                             : "text-content-tertiary"
                         }`}
                       >
-                        {getDocumentStatusDescription(doc.status, doc.error_message)}
+                        {getDocumentStatusDescription(doc.status, doc.error_message, doc.metadata_)}
                       </p>
                     </div>
                   </td>

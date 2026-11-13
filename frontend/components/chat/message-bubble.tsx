@@ -1,8 +1,19 @@
 "use client";
 
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Activity, Bot, Copy, Globe, PencilLine, RefreshCcw, Trash2, User } from "lucide-react";
+import {
+  Activity,
+  Bot,
+  Check,
+  Copy,
+  Globe,
+  PencilLine,
+  RefreshCcw,
+  Trash2,
+  User,
+} from "lucide-react";
 import { OverflowActionMenu } from "./overflow-action-menu";
 import { SourceCitation } from "./source-citation";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -30,6 +41,7 @@ export interface RetrievalDiagnostics {
   abstained?: boolean;
   used_outside_knowledge?: boolean;
   low_support_reason?: string | null;
+  invalid_citations_removed?: number[];
 }
 
 interface MessageBubbleProps {
@@ -40,6 +52,8 @@ interface MessageBubbleProps {
     sources?: any[];
     state?: "streaming" | "complete" | "error";
     loadingModel?: boolean;
+    streamStage?: string;
+    streamStatusText?: string;
     usedOutsideKnowledge?: boolean;
     abstained?: boolean;
     diagnostics?: RetrievalDiagnostics | null;
@@ -52,6 +66,60 @@ interface MessageBubbleProps {
   onRegenerate?: (messageId: string) => void;
   onCopy?: (content: string) => void;
   deleteDisabled?: boolean;
+}
+
+function CodeBlockPre({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) {
+  const [copied, setCopied] = useState(false);
+
+  function extractText(node: React.ReactNode): string {
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join("");
+    if (node && typeof node === "object" && "props" in node) {
+      return extractText((node as any).props?.children);
+    }
+    return "";
+  }
+
+  async function handleCopyCode() {
+    const codeText = extractText(children).replace(/\n$/, "");
+    if (!codeText) return;
+    try {
+      await navigator.clipboard?.writeText(codeText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // ignore clipboard errors
+    }
+  }
+
+  return (
+    <div className="group relative my-2">
+      <button
+        type="button"
+        onClick={() => void handleCopyCode()}
+        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border border-border-primary bg-surface-primary/90 px-2 py-1 text-[11px] font-medium text-content-secondary opacity-0 transition-opacity group-hover:opacity-100 hover:text-content-primary focus:opacity-100"
+        aria-label="Copy code block"
+      >
+        {copied ? (
+          <>
+            <Check className="h-3 w-3 text-emerald-400" />
+            <span>Copied</span>
+          </>
+        ) : (
+          <>
+            <Copy className="h-3 w-3" />
+            <span>Copy</span>
+          </>
+        )}
+      </button>
+      <pre
+        className="overflow-x-auto rounded-xl border border-border-primary bg-surface-secondary p-3 font-mono text-xs"
+        {...props}
+      >
+        {children}
+      </pre>
+    </div>
+  );
 }
 
 export function MessageBubble({
@@ -110,22 +178,20 @@ export function MessageBubble({
       ];
 
   return (
-    <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
-      {/* Avatar */}
+    <div className={`flex gap-3 animate-fade-slide-up ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-primary/20 text-accent-primary">
           <Bot className="h-4 w-4" />
         </div>
       )}
 
-      {/* Bubble */}
       <div
-        className={`max-w-[85%] rounded-[24px] px-4 py-3 shadow-[0_18px_48px_rgba(2,6,23,0.22)] transition-all duration-200 ${
+        className={`max-w-[85%] rounded-[24px] px-4 py-3 shadow-[0_18px_48px_rgba(2,6,23,0.18)] transition-all duration-200 ${
           isUser
             ? "rounded-br-md bg-linear-to-br from-accent-primary via-accent-secondary to-accent-primary-hover text-white"
             : isError
               ? "rounded-bl-md border border-red-500/30 bg-red-500/10 text-content-primary"
-              : "rounded-bl-md border border-white/7 bg-white/[0.04] text-content-primary backdrop-blur-sm"
+              : "rounded-bl-md border border-border-primary bg-surface-secondary/80 text-content-primary backdrop-blur-sm"
         }`}
       >
         {showActions && (
@@ -141,7 +207,12 @@ export function MessageBubble({
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : isStreaming && !message.content ? (
-          <ThinkingIndicator compact loadingModel={message.loadingModel} />
+          <ThinkingIndicator
+            compact
+            loadingModel={message.loadingModel}
+            stage={message.streamStage}
+            statusText={message.streamStatusText}
+          />
         ) : (
           <div className="prose prose-sm prose-invert max-w-none text-content-primary">
             <ReactMarkdown
@@ -156,6 +227,16 @@ export function MessageBubble({
                   <li {...props}>
                     {processCitations(children, onCitationClick, message.sources)}
                   </li>
+                ),
+                td: ({ children, ...props }) => (
+                  <td className="border border-border-primary px-2.5 py-1.5 text-xs" {...props}>
+                    {processCitations(children, onCitationClick, message.sources)}
+                  </td>
+                ),
+                th: ({ children, ...props }) => (
+                  <th className="border border-border-primary bg-surface-tertiary px-2.5 py-1.5 text-left text-xs font-semibold" {...props}>
+                    {children}
+                  </th>
                 ),
                 h1: ({ children, ...props }) => (
                   <h1 {...props}>
@@ -175,7 +256,7 @@ export function MessageBubble({
                 code: ({ children, className, ...props }) => {
                   const isInline = !className;
                   return isInline ? (
-                    <code className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-xs" {...props}>
+                    <code className="rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-xs" {...props}>
                       {children}
                     </code>
                   ) : (
@@ -184,14 +265,7 @@ export function MessageBubble({
                     </code>
                   );
                 },
-                pre: ({ children, ...props }) => (
-                  <pre
-                    className="overflow-x-auto rounded-lg bg-surface-secondary p-3 font-mono text-xs"
-                    {...props}
-                  >
-                    {children}
-                  </pre>
-                ),
+                pre: ({ children, ...props }) => <CodeBlockPre {...props}>{children}</CodeBlockPre>,
               }}
             >
               {message.content}
@@ -200,10 +274,14 @@ export function MessageBubble({
         )}
 
         {!isUser && message.sources && message.sources.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/8 pt-3 text-[11px] text-content-tertiary">
-            <span className="inline-flex h-5 items-center rounded-full border border-accent-citation/20 bg-accent-citation/10 px-2 font-medium text-accent-citation">
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-primary pt-2.5 text-[11px] text-content-tertiary">
+            <button
+              type="button"
+              onClick={() => onCitationClick(message.sources?.[0]?.citation_number ?? 1, message.sources)}
+              className="inline-flex h-5 items-center rounded-full border border-accent-citation/30 bg-accent-citation/10 px-2.5 font-medium text-accent-citation transition hover:bg-accent-citation/20"
+            >
               {message.sources.length} source{message.sources.length > 1 ? "s" : ""}
-            </span>
+            </button>
             <span>Grounded answer</span>
           </div>
         )}
@@ -221,11 +299,11 @@ export function MessageBubble({
         )}
 
         {!isUser && !isStreaming && diag && (
-          <details className="mt-3 rounded-xl border border-border-primary/70 bg-surface-secondary/60 px-3 py-2 text-xs text-content-secondary">
+          <details className="mt-3 rounded-xl border border-border-primary/70 bg-surface-primary/60 px-3 py-2 text-xs text-content-secondary">
             <summary className="flex cursor-pointer items-center justify-between gap-2 font-medium text-content-tertiary hover:text-content-primary">
               <span className="inline-flex items-center gap-1.5">
                 <Activity className="h-3.5 w-3.5 text-accent-primary" />
-                <span>Retrieval & Latency Diagnostics</span>
+                <span>Chi tiết kỹ thuật (Retrieval & Latency Diagnostics)</span>
               </span>
               <span className="text-[11px]">
                 {diag.intent ? `Intent: ${diag.intent}` : ""}
@@ -304,7 +382,6 @@ export function MessageBubble({
         )}
       </div>
 
-      {/* User avatar */}
       {isUser && (
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-content-secondary">
           <User className="h-4 w-4" />
@@ -314,9 +391,6 @@ export function MessageBubble({
   );
 }
 
-/**
- * Replace citation patterns like [1], [2] in React children with SourceCitation components.
- */
 function processCitations(
   children: React.ReactNode,
   onClick: (num: number, sources?: any[]) => void,

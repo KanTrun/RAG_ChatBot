@@ -1,0 +1,3 @@
+Overview of Fast Abstention and Query Caching
+Fast abstention skips LLM generation whenever the top retrieved evidence score falls below the confidence threshold of 0.30, returning a grounded refusal in under 2 seconds.
+The query embedding cache uses an in-memory LRU cache of 512 entries with a 1800-second TTL so repeated questions reuse their 1024-dimensional vector without calling Ollama again.

@@ -1,6 +1,6 @@
 # RAG ChatBot — Hệ thống Hỏi Đáp Tài Liệu Nội Bộ (Local-First Hybrid RAG)
 
-Hệ thống RAG Chatbot hoàn chỉnh chạy độc lập (local-first) với **FastAPI**, **PostgreSQL + pgvector**, **Celery + Redis**, **Ollama (`mxbai-embed-large` + `qwen2.5:7b`)** và **Next.js 15 + React 19**. Hệ thống hỗ trợ trích xuất cấu trúc tài liệu đa định dạng, tìm kiếm lai (BM25 + Vector kết hợp bằng Reciprocal Rank Fusion), trả lời kèm trích dẫn nguồn bấm được `[1], [2]`, cơ chế từ chối khi thiếu bằng chứng (`strict_documents`), bảng chẩn đoán độ trễ/token từng bước và bộ công cụ đánh giá chất lượng trên 52 cặp hỏi đáp chuẩn.
+Hệ thống RAG Chatbot hoàn chỉnh chạy độc lập (local-first) với **FastAPI**, **PostgreSQL + pgvector**, **Celery + Redis**, **Ollama (`mxbai-embed-large` + `qwen2.5:7b`)** và **Next.js 15 + React 19**. Hệ thống hỗ trợ trích xuất cấu trúc tài liệu đa định dạng (`.pdf`, `.docx`, `.txt`, `.md`, `.html`), tìm kiếm lai song ngữ Anh–Việt (BM25 + Vector hợp nhất bằng Reciprocal Rank Fusion), trả lời đúng ngôn ngữ người hỏi kèm trích dẫn nguồn `[1], [2]` có hậu kiểm, cơ chế từ chối nhanh khi thiếu bằng chứng (`strict_documents`), phòng chống Prompt Injection từ tài liệu, giao diện Dark/Light mượt mà và bộ công cụ đánh giá chất lượng trên **112 cặp hỏi đáp chuẩn trải đều 12 cấp độ (`L1`–`L12`)**.
 
 ---
 
@@ -9,19 +9,22 @@ Hệ thống RAG Chatbot hoàn chỉnh chạy độc lập (local-first) với *
 ```text
 +-----------------------------------------------------------------------------------+
 |                        Frontend (Next.js 15 + React 19, Port 3000)                |
-|  - Chat SSE Streaming + Nút dừng sinh (Stop) + Chế độ Document Only / Hybrid      |
-|  - Trích dẫn tương tác [1],[2] + Panel Chẩn đoán (Intent, BM25, Latency, Tokens)  |
-|  - Quản lý Tài liệu (Kéo thả đa file, Cấu hình Chunk 512/51, Chunks Inspector)    |
-|  - Admin Dashboard (Quản lý Users/RBAC, System Stats, Lịch sử Đánh giá Chất lượng)|
+|  - Chat SSE Streaming theo giai đoạn (retrieving -> generating -> chunk -> done)  |
+|  - Menu 3 chấm Portal (z-50, auto-flip, phím mũi tên/Escape), Dark/Light Theme    |
+|  - Trích dẫn [n] có Hover Preview + Drawer Nguồn tự cuộn, Copy Code Block         |
+|  - Thanh tài liệu thu gọn (tối đa 2 chip + Popover "+N more")                     |
+|  - Quản lý Tài liệu (Tiến độ stage thật, Bulk Re-index/Delete, Chunks Inspector)  |
+|  - Admin Dashboard (Users/RBAC, System Stats, Biểu đồ Lịch sử Đánh giá RAG)       |
 +-----------------------------------------+-----------------------------------------+
                                           | HTTP / SSE (/api/v1/*)
                                           v
 +-----------------------------------------------------------------------------------+
 |                        Backend API (FastAPI Async, Port 8000)                     |
 |  - Auth JWT + RBAC (admin / editor / viewer) + Sliding-Window Rate Limiter        |
-|  - Startup Check & Model Warmup (Kiểm tra model Ollama & làm nóng trên CPU)       |
-|  - Query Rewriter -> Intent Classifier -> Hybrid Retrieval -> Context Assembler   |
-|  - Structured JSON Logging (STRUCTURED_CHAT_LOG) & Deep Health Check (/health)    |
+|  - Startup Check & Model Warmup + Celery Live Ping (/health inspect().ping())     |
+|  - Conditional QueryRewriter -> Intent Classifier -> Parallel Hybrid Retrieval    |
+|  - Prompt Guard (<retrieved_context> + sanitize_context_chunks)                   |
+|  - Output Validator (validate_and_clean_citations: loại bỏ [n] vượt phạm vi)      |
 +------------+----------------------------+----------------------------+------------+
              |                            |                            |
              v                            v                            v
@@ -30,8 +33,9 @@ Hệ thống RAG Chatbot hoàn chỉnh chạy độc lập (local-first) với *
 |       (Port 5432)       |  |      (Port 6379)        |  |      (Port 11434)       |
 | - Bảng document_chunks  |  | - Queue tác vụ bất đồng |  | - Embedding:            |
 | - Vector(1024) HNSW idx |  |   bộ: ingestion.        |  |   mxbai-embed-large     |
-| - TSVECTOR GIN index +  |  |   process_document      |  |   (1024 chiều)          |
-|   trigger cập nhật BM25 |  | - Broker & Result store |  | - LLM: qwen2.5:7b       |
+|   (ef_search = 64)      |  |   process_document      |  |   (batch=32, Sem=4,     |
+| - TSVECTOR GIN index +  |  | - Live Worker Ping      |  |   LRU cache 512/1800s)  |
+|   BM25 tiếng Việt       |  |                         |  | - LLM: qwen2.5:7b       |
 +-------------------------+  +-------------------------+  +-------------------------+
 ```
 
@@ -46,6 +50,8 @@ Từ thư mục gốc của dự án (`D:\RAG_Project`), sao chép file `.env.ex
 cp .env.example .env
 ```
 
+> Lưu ý: `BACKEND_CORS_ORIGINS` hỗ trợ cả định dạng mảng JSON (`["http://localhost:3000","http://127.0.0.1:3000"]`) lẫn chuỗi phân tách bằng dấu phẩy.
+
 ### Bước 2: Khởi động toàn bộ 7 service bằng một lệnh Docker Compose
 
 ```powershell
@@ -53,7 +59,6 @@ docker compose up -d --build
 ```
 
 ### Bước 3: Tải (pull) 2 model bắt buộc vào container Ollama
-Nếu chạy lần đầu và volume `ollama-data` chưa có sẵn model, chạy lệnh sau để tải model embedding (`mxbai-embed-large`) và model sinh văn bản (`qwen2.5:7b`):
 
 ```powershell
 docker exec -it rag-ollama ollama pull mxbai-embed-large
@@ -66,86 +71,72 @@ docker exec -it rag-ollama ollama pull qwen2.5:7b
 curl http://127.0.0.1:8000/health
 ```
 
-Kết quả trả về HTTP `200 OK` liệt kê chi tiết trạng thái từng thành phần:
-- `components.database`: kết nối PostgreSQL và extension `pgvector`
-- `components.redis`: kết nối Redis (`PING`)
-- `components.ollama`: trạng thái kết nối Ollama, danh sách model đã cài (`mxbai-embed-large`, `qwen2.5:7b`) và trạng thái làm nóng (`warmup_status`)
-- `components.celery_worker`: xác nhận task `ingestion.process_document` đã được đăng ký trong worker.
-
 Truy cập giao diện web tại: **`http://localhost:3000`** (Tài khoản Admin mặc định khởi tạo từ `.env`: `admin@example.com` / `AdminPassword123!`).
 
 ---
 
-## 3. Các biến `.env` bắt buộc và ý nghĩa
+## 3. Các biến `.env` quan trọng
 
 | Biến môi trường | Giá trị mặc định | Mô tả |
 | :--- | :--- | :--- |
 | `DATABASE_URL` | `postgresql+asyncpg://rag:rag@localhost:5432/ragdb` | Kết nối async PostgreSQL cho FastAPI và Celery worker |
 | `REDIS_URL` | `redis://localhost:6379/0` | Kết nối Redis cho Celery broker/backend |
-| `EMBEDDING_PROVIDER` | `ollama` | Nhà cung cấp vector embedding (`ollama` cho chạy local) |
-| `OLLAMA_BASE_URL` | `http://ollama:11434` | Địa chỉ dịch vụ Ollama trong mạng Docker |
+| `EMBEDDING_PROVIDER` | `ollama` | Nhà cung cấp vector embedding (`ollama`, `bge-m3`, `openai`) |
 | `OLLAMA_EMBEDDING_MODEL` | `mxbai-embed-large` | Model embedding 1024 chiều khớp với cột `Vector(1024)` |
-| `LLM_PROVIDER` | `ollama` | Nhà cung cấp mô hình ngôn ngữ (`ollama`) |
-| `LLM_MODEL` | `qwen2.5:7b` | Model sinh câu trả lời trên Ollama |
+| `LLM_PROVIDER` / `LLM_MODEL` | `ollama` / `qwen2.5:7b` | Nhà cung cấp và model sinh câu trả lời trên Ollama |
+| `OLLAMA_KEEP_ALIVE` | `30m` | Thời gian giữ model trong RAM sau mỗi lần gọi |
+| `EMBEDDING_BATCH_SIZE` / `EMBEDDING_CONCURRENCY` | `32` / `4` | Kích thước batch và số luồng đồng thời khi gọi `/api/embed` |
+| `HNSW_EF_SEARCH` | `64` | Tham số `hnsw.ef_search` cho truy vấn pgvector |
+| `FAST_MODE` | `false` | Bật chế độ tối ưu tốc độ trên CPU (bỏ qua LLM rewrite và secondary parent rerank) |
+| `RERANKER_PROVIDER` | `none` | Dùng bộ xếp hạng từ vựng/cấu trúc nhanh mặc định (hoặc `cohere` khi có API key) |
 | `FIRST_TOKEN_TIMEOUT_SECONDS` | `120` | Thời gian chờ tối đa (giây) cho token đầu tiên khi chạy trên CPU |
-| `ENABLE_BM25` | `true` | Bật/tắt tìm kiếm từ khóa BM25 (`tsvector`) trong hybrid retrieval |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `51` | Kích thước chunk (token) và phần chồng lấp mặc định |
-| `RATE_LIMIT_CHAT` / `RATE_LIMIT_UPLOAD` | `30` / `10` | Giới hạn số request mỗi phút cho API chat và upload |
 
 ---
 
-## 4. Đánh giá chất lượng hệ thống (Golden Dataset Benchmark)
+## 4. Đo Hiệu năng (Before/After) & Đánh giá Chất lượng 112 Câu hỏi (`L1`–`L12`)
 
-Hệ thống đi kèm bộ dữ liệu vàng `backend/app/evaluation/golden_dataset.json` gồm **52 cặp hỏi đáp** bám sát tài liệu (`sample-article.txt` và `rag-architecture-guide.md`), bao gồm cả các câu hỏi ngoài phạm vi tài liệu để kiểm tra khả năng từ chối trả lời (`strict_documents`).
-
-### Chạy đánh giá bằng một lệnh
+### 4.1. Chạy bộ đo hiệu năng Ingestion & Chat (`benchmark_rag.py`)
 
 ```powershell
-# Chạy trong container backend:
-docker compose exec backend python scripts/run_evaluation.py
+# Đo baseline và lưu docs/PERF_BASELINE.md:
+docker compose exec backend python scripts/benchmark_rag.py --mode baseline --runs 5
 
-# Hoặc chạy kèm so sánh đóng góp của BM25 (Vector-only vs. Hybrid BM25 + Vector):
+# Đo sau tối ưu và lưu app/evaluation/benchmark_optimized.json:
+docker compose exec backend python scripts/benchmark_rag.py --mode optimized --runs 5
+```
+
+Xem báo cáo đầy đủ tại:
+- `docs/PERF_BASELINE.md` (Số đo Baseline & Top 5 nút thắt)
+- `docs/PERFORMANCE_REPORT.md` (Bảng so sánh Trước vs. Sau, đối chứng `mxbai-embed-large` vs. `bge-m3`, và kết quả 12 cấp độ `L1`–`L12`).
+
+### 4.2. Chạy đánh giá chất lượng trên 112 câu hỏi vàng (`L1`–`L12`)
+
+```powershell
 docker compose exec backend python scripts/run_evaluation.py --compare-bm25
 ```
 
-### Số đo thực nghiệm đã kiểm chứng trên bộ 52 câu hỏi vàng
-
-Kết quả chạy thực tế từ `scripts/run_evaluation.py` (lưu tại `backend/app/evaluation/evaluation_report.json` và `evaluation_history.json`):
-
-| Chế độ Retrieval | Faithfulness | Context Precision | Context Recall | Latency p50 / p95 (Retrieval + Synthesis) | Avg Tokens / Answer |
+| Chế độ Truy xuất (112 câu hỏi L1–L12) | Faithfulness | Context Precision | Context Recall | Latency p50 / p95 | Avg Tokens / Answer |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Vector-Only (`ENABLE_BM25=false`)** | `0.9808` (98.1%) | `0.9103` (91.0%) | `0.9426` (94.3%) | `0.59 ms` / `0.71 ms` | `79.7` |
-| **Hybrid RRF (`ENABLE_BM25=true`)** | `1.0000` (100.0%) | `0.8818` (88.2%) | `0.9808` (98.1%) | `0.91 ms` / `1.10 ms` | `82.7` |
-
-- Khi bật **BM25 kết hợp Vector qua RRF**, chỉ số **Context Recall tăng từ 94.3% lên 98.1% (+3.82 điểm phần trăm)** và **Faithfulness đạt 100.0%** nhờ tìm đúng các đoạn chứa định danh kỹ thuật và từ khóa chính xác (`ix_chunks_embedding_hnsw`, `trg_chunks_search_vector`, `FIRST_TOKEN_TIMEOUT_SECONDS`).
-- Toàn bộ 6/6 câu hỏi ngoài phạm vi tài liệu (ví dụ: *"What is the capital of France?"*, *"What is the population of Tokyo in 2026?"*) đều được hệ thống từ chối chính xác (`abstained = true`).
+| **Vector-Only (`ENABLE_BM25=false`)** | `0.9893` (98.9%) | `0.8221` (82.2%) | `0.9234` (92.3%) | `1.59 ms` / `1.92 ms` | `113.6` |
+| **Hybrid RRF (`ENABLE_BM25=true`)** | **`0.9982` (99.8%)** | `0.8092` (80.9%) | **`0.9676` (96.8%)** | `2.23 ms` / `2.94 ms` | `117.5` |
 
 ---
 
-## 5. Cách chạy bộ kiểm thử (Tests)
+## 5. Quy tắc An toàn Database & Cách chạy Kiểm thử (Tests)
+
+> **CẢNH BÁO AN TOÀN BẮT BUỘC**: Tuyệt đối **KHÔNG** chạy `pytest` trực tiếp bên trong container `rag-backend` đang kết nối tới database thật (`ragdb`). `backend/tests/conftest.py` đã có chốt chặn tự động dừng (`pytest.exit(..., returncode=1)`) nếu `DATABASE_URL` không chứa `"rag_test"`.
 
 ```powershell
-# 1. Chạy script kiểm tra nghiệm thu toàn diện (5 lỗi gốc + 8 tiêu chí nghiệm thu):
+# 1. Sao lưu database thật trước khi chạy migration:
+bash scripts/backup_db.sh
+
+# 2. Chạy pytest AN TOÀN trên stack test độc lập (rag_test):
+docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+# 3. Chạy script kiểm tra nghiệm thu toàn diện Phase 0-4:
 docker compose exec backend python scripts/verify_acceptance.py
 
-# 2. Chạy toàn bộ pytest backend:
-docker compose exec backend pytest -v
-
-# 3. Chạy unit tests frontend (Vitest):
+# 4. Chạy unit tests frontend (Vitest):
 cd frontend
 npm test -- --run
 ```
-
----
-
-## 6. Các lỗi thường gặp và cách khắc phục (Troubleshooting)
-
-1. **Lỗi thiếu model trên Ollama (`Missing Ollama models: mxbai-embed-large, qwen2.5:7b`)**:
-   - **Nguyên nhân**: Container `rag-ollama` đã chạy nhưng chưa pull model về volume.
-   - **Cách sửa**: Kiểm tra `curl http://127.0.0.1:8000/health` xem mục `components.ollama.missing_models`, sau đó chạy `docker exec -it rag-ollama ollama pull mxbai-embed-large` và `docker exec -it rag-ollama ollama pull qwen2.5:7b`.
-2. **Câu hỏi đầu tiên sau khi khởi động phản hồi chậm trên máy chỉ có CPU**:
-   - **Nguyên nhân**: Model `qwen2.5:7b` (4.7GB) cần nạp vào RAM.
-   - **Cách sửa**: Hệ thống đã tự động chạy tác vụ warmup lúc khởi động và nâng giới hạn chờ token đầu tiên lên `120` giây (`FIRST_TOKEN_TIMEOUT_SECONDS=120`), đồng thời hiển thị thông báo *"Đang tải model, vui lòng chờ..."* trên giao diện chat.
-3. **Tài liệu cũ trước khi nâng cấp không tìm thấy bằng từ khóa BM25**:
-   - **Nguyên nhân**: Các bản ghi cũ có cột `search_vector` bị `NULL`.
-   - **Cách sửa**: Khi khởi động, `backend` tự động tạo lại trigger `trg_chunks_search_vector` và chạy lệnh SQL backfill toàn bộ các dòng `search_vector IS NULL`. Bạn cũng có thể bấm nút **Re-index** trên giao diện quản lý tài liệu.

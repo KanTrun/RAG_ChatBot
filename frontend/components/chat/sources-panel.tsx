@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { FileText, X } from "lucide-react";
 
 interface Source {
@@ -46,13 +47,26 @@ function groupSources(sources: Source[]) {
 export function SourcesPanel({ sources, activeCitation, onClose }: SourcesPanelProps) {
   const groupedSources = groupSources(sources);
 
+  useEffect(() => {
+    if (!activeCitation) return;
+    const el = document.getElementById(`source-card-${activeCitation}`);
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [activeCitation]);
+
   return (
-    <aside className="flex h-full min-h-0 w-80 shrink-0 flex-col border-l border-border-primary bg-surface-secondary">
+    <aside className="flex h-full min-h-0 w-80 sm:w-96 shrink-0 flex-col border-l border-border-primary bg-surface-secondary animate-fade-slide-up">
       <div className="flex items-center justify-between border-b border-border-primary px-4 py-3">
-        <h3 className="text-sm font-semibold text-content-primary">Sources</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary">Sources</h3>
+          <span className="rounded-full bg-teal-500/15 px-2 py-0.5 text-[11px] font-medium text-teal-400">
+            {sources.length}
+          </span>
+        </div>
         <button
           onClick={onClose}
-          className="rounded-lg p-1 text-content-secondary hover:bg-surface-tertiary hover:text-content-primary"
+          className="rounded-lg p-1 text-content-secondary transition-colors hover:bg-surface-tertiary hover:text-content-primary"
           aria-label="Close sources panel"
         >
           <X className="h-4 w-4" />
@@ -80,22 +94,28 @@ export function SourcesPanel({ sources, activeCitation, onClose }: SourcesPanelP
                   {items.map((src) => (
                     <li
                       key={src.citation_number}
-                      className={`rounded-lg border p-3 transition-colors ${
+                      id={`source-card-${src.citation_number}`}
+                      className={`rounded-xl border p-3 transition-all duration-200 ${
                         activeCitation === src.citation_number
-                          ? "border-teal-500/50 bg-teal-500/5"
+                          ? "border-teal-500/60 bg-teal-500/10 ring-1 ring-teal-500/30"
                           : "border-border-primary bg-surface-primary"
                       }`}
                     >
-                      <div className="flex items-start gap-2">
+                      <div className="flex items-start gap-2.5">
                         <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-teal-500/20 text-xs font-bold text-teal-400">
                           {src.citation_number}
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-content-primary">
-                            {src.document_title}
-                          </p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-medium text-content-primary">
+                              {src.document_title}
+                            </p>
+                            <span className="shrink-0 rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-teal-400">
+                              {src.score.toFixed(2)}
+                            </span>
+                          </div>
                           <div className="mt-1 flex items-center gap-2 text-xs text-content-tertiary">
-                            <FileText className="h-3 w-3" />
+                            <FileText className="h-3 w-3 shrink-0" />
                             <span className="truncate">{src.file_name}</span>
                             {(src.page_start ?? src.page_number) && (
                               <span>

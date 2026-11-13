@@ -1,0 +1,59 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 474 >>
+stream
+BT
+/F1 10 Tf
+45 750 Td
+14 TL
+(Enterprise SLA and Capacity Metrics) Tj T*
+(Section 1: Ingestion Throughput and Worker Concurrency) Tj T*
+(The Celery worker pool processes PDF, DOCX, TXT, MD, and HTML uploads up to 50 MB per file.) Tj T*
+(Content deduplication uses SHA-256 content_hash so identical paragraphs are embedded only once per batch.) Tj T*
+(Batch database insertion commits all chunks in a single SQLAlchemy transaction after vector generation completes.) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 415 >>
+stream
+BT
+/F1 10 Tf
+45 750 Td
+14 TL
+(Section 2: Disaster Recovery and Database Backups) Tj T*
+(Before running any Alembic schema migration, operators execute scripts/backup_db.sh to create a timestamped pg_dump snapshot inside the backups directory.) Tj T*
+(Automated pytest suites are isolated strictly to the rag_test database and abort immediately with returncode 1 if DATABASE_URL points to production ragdb.) Tj T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000772 00000 n 
+0000000898 00000 n 
+0000001364 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1434
+%%EOF

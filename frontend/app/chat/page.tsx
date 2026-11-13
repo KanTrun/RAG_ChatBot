@@ -21,6 +21,8 @@ interface Message {
   sources?: Source[];
   state?: "streaming" | "complete" | "error";
   loadingModel?: boolean;
+  streamStage?: string;
+  streamStatusText?: string;
   usedOutsideKnowledge?: boolean;
   abstained?: boolean;
   diagnostics?: RetrievalDiagnostics | null;
@@ -179,11 +181,22 @@ function ChatPageContent() {
               ...m,
               content: m.content || "Đã dừng sinh câu trả lời.",
               state: "complete",
+              loadingModel: false,
             }
           : m,
       ),
     );
   }, []);
+
+  useEffect(() => {
+    function handleAbortStream() {
+      handleStopGenerating();
+    }
+    window.addEventListener("chat-abort-stream", handleAbortStream);
+    return () => {
+      window.removeEventListener("chat-abort-stream", handleAbortStream);
+    };
+  }, [handleStopGenerating]);
 
   const queueActiveDocumentSync = useCallback(
     (nextDocuments: ActiveDocument[]) => {
@@ -252,13 +265,7 @@ function ChatPageContent() {
         .catch((error) => {
           if (cancelled) return;
           setActiveDocuments([]);
-          setMessages([
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: getApiErrorMessage(error),
-            },
-          ]);
+          setMessageActionError(getApiErrorMessage(error));
         });
 
       return () => {
@@ -290,13 +297,7 @@ function ChatPageContent() {
           replaceRoute("/chat");
           return;
         }
-        setMessages([
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: getApiErrorMessage(error),
-          },
-        ]);
+        setMessageActionError(getApiErrorMessage(error));
       });
 
     return () => {
@@ -339,6 +340,8 @@ function ChatPageContent() {
         role: "assistant",
         content: "",
         state: "streaming",
+        streamStage: "retrieving",
+        streamStatusText: "Đang tìm tài liệu...",
       };
       messageMutationVersionRef.current += 1;
       setMessages((current) => {
@@ -420,10 +423,17 @@ function ChatPageContent() {
               continue;
             }
 
-            if (event.type === "status" && event.status === "loading_model") {
+            if (event.type === "status") {
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === assistantMessageId ? { ...m, loadingModel: true } : m,
+                  m.id === assistantMessageId
+                    ? {
+                        ...m,
+                        loadingModel: event.status === "loading_model",
+                        streamStage: event.stage || event.status || "generating",
+                        streamStatusText: event.content || m.streamStatusText,
+                      }
+                    : m,
                 ),
               );
             } else if (event.type === "chunk" && event.content) {
@@ -432,8 +442,8 @@ function ChatPageContent() {
                 prev.map((m) =>
                   m.id === assistantMessageId
                     ? { ...m, content: aiContent, state: "streaming", loadingModel: false }
-                    : m
-                )
+                    : m,
+                ),
               );
             } else if (event.type === "sources" && event.sources) {
               setSources(event.sources);
@@ -441,8 +451,8 @@ function ChatPageContent() {
                 prev.map((m) =>
                   m.id === assistantMessageId
                     ? { ...m, sources: event.sources }
-                    : m
-                )
+                    : m,
+                ),
               );
             } else if (event.type === "done") {
               if (Array.isArray(event.active_documents)) {
@@ -495,8 +505,9 @@ function ChatPageContent() {
                       ...m,
                       content: getApiErrorMessage(err),
                       state: "error",
+                      loadingModel: false,
                     }
-                  : m
+                  : m,
               ),
             );
           }
@@ -535,13 +546,15 @@ function ChatPageContent() {
 
   const handleUploadComplete = useCallback(
     (document: UploadedDocument) => {
+      const notice = buildUploadNotice(document);
+      setMessageActionNotice(notice);
       messageMutationVersionRef.current += 1;
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: buildUploadNotice(document),
+          content: notice,
         },
       ]);
     },
@@ -673,12 +686,12 @@ function ChatPageContent() {
   }, []);
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 overflow-hidden">
       {/* Chat area */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
         {messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="text-center">
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+            <div className="max-w-lg text-center">
               <h2 className="text-xl font-semibold text-content-primary">
                 Start a conversation
               </h2>

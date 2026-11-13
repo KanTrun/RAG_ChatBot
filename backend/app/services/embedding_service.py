@@ -1,11 +1,16 @@
-"""Embedding service with provider-agnostic interface. BGE-M3 + OpenAI fallback."""
+"""Embedding service with batching, bounded concurrency, connection pooling, content_hash deduplication, and LRU TTL query cache."""
 
+from __future__ import annotations
+
+import asyncio
+from collections import OrderedDict
+from dataclasses import dataclass
 import hashlib
 import logging
-import math
-import re
-from dataclasses import dataclass
+import time
 from typing import Protocol
+
+import httpx
 
 from app.config import get_settings
 
@@ -33,20 +38,67 @@ class EmbeddingProvider(Protocol):
         ...
 
 
+class _QueryEmbeddingCache:
+    """In-memory LRU cache with TTL for query embeddings."""
+
+    def __init__(self, max_size: int = 512, ttl_seconds: int = 1800):
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self._store: OrderedDict[str, tuple[float, EmbeddingResult]] = OrderedDict()
+
+    def get(self, key: str) -> EmbeddingResult | None:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() > expires_at:
+            self._store.pop(key, None)
+            return None
+        self._store.move_to_end(key)
+        return value
+
+    def set(self, key: str, value: EmbeddingResult) -> None:
+        now = time.monotonic()
+        self._store[key] = (now + self.ttl_seconds, value)
+        self._store.move_to_end(key)
+        while len(self._store) > self.max_size:
+            self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        self._store.clear()
+
+
+_shared_http_client: httpx.AsyncClient | None = None
+
+
+def get_shared_embedding_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
+    """Return a shared httpx.AsyncClient with connection pooling."""
+    global _shared_http_client
+    if _shared_http_client is None or _shared_http_client.is_closed:
+        _shared_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=10.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _shared_http_client
+
+
 class OpenAIEmbeddingService:
     """OpenAI text-embedding-3-small fallback (no GPU needed)."""
 
     def __init__(self):
         from openai import AsyncOpenAI
+
         settings = get_settings()
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._model = "text-embedding-3-small"
 
     @property
     def dimension(self) -> int:
-        return 1024  # request 1024 dims via dimensions param
+        return 1024
 
     async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        if not texts:
+            return []
         response = await self._client.embeddings.create(
             input=texts,
             model=self._model,
@@ -59,60 +111,42 @@ class OpenAIEmbeddingService:
 
 
 class OllamaEmbeddingService:
-    """Ollama embedding provider for local-first RAG."""
+    """Ollama embedding provider with true batching, connection reuse, keep_alive, and content_hash deduplication."""
 
     def __init__(self, base_url: str | None = None, model: str | None = None):
         settings = get_settings()
         self._base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self._model = model or settings.ollama_embedding_model
+        self._keep_alive = settings.ollama_keep_alive
+        self._batch_size = max(1, settings.embedding_batch_size)
+        self._semaphore = asyncio.Semaphore(max(1, settings.embedding_concurrency))
+        self._cache = _QueryEmbeddingCache()
 
     @property
     def dimension(self) -> int:
         return 1024
 
-    def _build_fallback_embedding(self, text: str) -> EmbeddingResult:
-        vector = [0.0] * self.dimension
-        tokens = re.findall(r"\w+", text.lower())
-        if not tokens:
-            tokens = [text.lower() or "empty"]
-
-        for token in tokens:
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            primary_index = int.from_bytes(digest[:2], "big") % self.dimension
-            secondary_index = int.from_bytes(digest[2:4], "big") % self.dimension
-            weight = 1.0 + (digest[4] / 255.0)
-
-            vector[primary_index] += weight
-            vector[secondary_index] -= weight * 0.5
-
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            vector[0] = 1.0
-            norm = 1.0
-
-        dense = [value / norm for value in vector]
-        return EmbeddingResult(dense=dense, sparse=None)
-
-    async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
-        if not texts:
-            return []
-
-        import httpx
-
-        payload = {"model": self._model, "input": texts}
+    async def _embed_single_batch(self, batch_texts: list[str]) -> list[EmbeddingResult]:
+        payload: dict = {
+            "model": self._model,
+            "input": batch_texts,
+        }
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(f"{self._base_url}/api/embed", json=payload)
-                response.raise_for_status()
-                data = response.json()
+            async with self._semaphore:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.post(f"{self._base_url}/api/embed", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
         except (httpx.HTTPError, OSError) as exc:
-            logger.warning(
-                "Ollama embedding unavailable at %s for model %s; using deterministic fallback embeddings. Error: %s",
+            logger.error(
+                "Ollama embedding service unreachable at %s for model '%s': %s",
                 self._base_url,
                 self._model,
                 exc,
             )
-            return [self._build_fallback_embedding(text) for text in texts]
+            raise RuntimeError(
+                f"Ollama embedding service at {self._base_url} is unreachable for model '{self._model}': {exc}"
+            ) from exc
 
         embeddings = data.get("embeddings")
         if embeddings is None:
@@ -120,9 +154,9 @@ class OllamaEmbeddingService:
             embeddings = [embedding] if embedding is not None else None
         if not isinstance(embeddings, list):
             raise ValueError(f"Ollama embedding model '{self._model}' returned no embeddings")
-        if len(embeddings) != len(texts):
+        if len(embeddings) != len(batch_texts):
             raise ValueError(
-                f"Ollama embedding model '{self._model}' returned {len(embeddings)} embeddings for {len(texts)} texts"
+                f"Ollama embedding model '{self._model}' returned {len(embeddings)} embeddings for {len(batch_texts)} texts"
             )
 
         results: list[EmbeddingResult] = []
@@ -136,16 +170,58 @@ class OllamaEmbeddingService:
             results.append(EmbeddingResult(dense=[float(value) for value in embedding], sparse=None))
         return results
 
+    async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        if not texts:
+            return []
+
+        unique_texts: list[str] = []
+        hash_to_index: dict[str, int] = {}
+        cached_by_hash: dict[str, EmbeddingResult] = {}
+        text_hashes: list[str] = []
+
+        for text in texts:
+            content_hash = hashlib.sha256(f"{self._model}:{text}".encode("utf-8")).hexdigest()
+            text_hashes.append(content_hash)
+            cached = self._cache.get(content_hash)
+            if cached is not None:
+                cached_by_hash[content_hash] = cached
+                continue
+            if content_hash not in hash_to_index:
+                hash_to_index[content_hash] = len(unique_texts)
+                unique_texts.append(text)
+
+        if unique_texts:
+            batches = [
+                unique_texts[i : i + self._batch_size]
+                for i in range(0, len(unique_texts), self._batch_size)
+            ]
+            if len(batches) == 1:
+                batch_outputs = [await self._embed_single_batch(batches[0])]
+            else:
+                batch_outputs = await asyncio.gather(
+                    *(self._embed_single_batch(batch) for batch in batches)
+                )
+            flat_unique_results = [item for sublist in batch_outputs for item in sublist]
+
+            for content_hash, u_idx in hash_to_index.items():
+                emb_res = flat_unique_results[u_idx]
+                cached_by_hash[content_hash] = emb_res
+                if len(texts) <= 8:
+                    self._cache.set(content_hash, emb_res)
+
+        return [cached_by_hash[h] for h in text_hashes]
+
 
 class BGEEmbeddingService:
     """BGE-M3 self-hosted embedding (dense + sparse in one forward pass)."""
 
     def __init__(self):
-        self._model = None  # lazy-loaded
+        self._model = None
 
     def _load_model(self):
         if self._model is None:
             from FlagEmbedding import BGEM3FlagModel
+
             settings = get_settings()
             self._model = BGEM3FlagModel(
                 settings.bge_model_name, use_fp16=True
@@ -156,10 +232,10 @@ class BGEEmbeddingService:
         return 1024
 
     async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
-        import asyncio
+        if not texts:
+            return []
         self._load_model()
 
-        # Run CPU/GPU-bound embedding in thread pool
         loop = asyncio.get_event_loop()
         output = await loop.run_in_executor(
             None,
@@ -184,15 +260,16 @@ class BGEEmbeddingService:
                     for k, v in sparse_weights[i].items()
                 }
 
-            results.append(EmbeddingResult(
-                dense=dense_vecs[i].tolist(),
-                sparse=sparse_dict,
-            ))
+            results.append(
+                EmbeddingResult(
+                    dense=dense_vecs[i].tolist(),
+                    sparse=sparse_dict,
+                )
+            )
 
         return results
 
 
-# Provider factory
 _embedding_service: EmbeddingProvider | None = None
 
 

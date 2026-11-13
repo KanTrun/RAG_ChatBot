@@ -33,9 +33,19 @@ export function formatDocumentSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function getDocumentStatusDescription(status: string, errorMessage?: string | null) {
+export function getDocumentStatusDescription(
+  status: string,
+  errorMessage?: string | null,
+  metadata?: Record<string, any> | null,
+) {
   if (status === "pending") return "Queued for indexing";
-  if (status === "processing") return "Indexing in progress";
+  if (status === "processing") {
+    const stageMsg = metadata?.stage_message;
+    if (typeof stageMsg === "string" && stageMsg.trim()) {
+      return `Indexing in progress (${stageMsg})`;
+    }
+    return "Indexing in progress";
+  }
   if (status === "indexed") return "Ready for chat retrieval";
   if (status === "failed") return errorMessage || "Re-index or upload again";
   return "Status unavailable";

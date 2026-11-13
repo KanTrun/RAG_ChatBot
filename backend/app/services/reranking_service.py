@@ -30,11 +30,18 @@ class RankedChunk:
 
 
 class RerankingService:
-    """Cross-encoder reranking using BGE-Reranker-v2-m3."""
+    """Cross-encoder reranking using BGE-Reranker-v2-m3 or fast lexical/structural fallback."""
 
     def __init__(self):
         self._model = None
-        self._enabled = get_settings().reranker_provider != "none"
+        settings = get_settings()
+        self._enabled = settings.reranker_provider != "none"
+        self._warned_fallback = False
+        if not self._enabled:
+            logger.warning(
+                "RERANKER_PROVIDER is 'none'; using fast lexical/structural reranking fallback."
+            )
+            self._warned_fallback = True
 
     def _load_model(self):
         """Lazy-load the reranker model."""
@@ -50,8 +57,12 @@ class RerankingService:
             )
             logger.info(f"Loaded reranker: {settings.bge_reranker_model}")
         except Exception as e:
-            logger.warning(f"Failed to load reranker model: {e}. Reranking disabled.")
+            logger.warning(
+                f"Failed to load reranker model '{settings.bge_reranker_model}': {e}. "
+                "Falling back to lexical/structural scoring."
+            )
             self._enabled = False
+            self._warned_fallback = True
 
     async def rerank(
         self,
@@ -64,6 +75,9 @@ class RerankingService:
             return []
 
         if not self._enabled:
+            if not self._warned_fallback:
+                logger.warning("Reranker disabled; using lexical/structural scoring fallback.")
+                self._warned_fallback = True
             return self._fallback(query, chunks, top_k)
 
         self._load_model()

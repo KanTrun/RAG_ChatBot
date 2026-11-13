@@ -30,16 +30,36 @@ os.environ.setdefault("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
 os.environ.setdefault("RERANKER_PROVIDER", "none")
 os.environ.setdefault("INGESTION_DISPATCH_MODE", "celery")
 
-from app.auth.jwt_handler import create_access_token, hash_password
-from app.dependencies import get_db
-from app.main import create_app
-from app.models import Base
-from app.models.chunk import DocumentChunk
-from app.models.conversation import Conversation
-from app.models.document import Document, DocumentStatus
-from app.models.feedback import Feedback
-from app.models.message import Message
-from app.models.user import Role, User, user_roles
+
+def verify_test_database_safety(db_url: str | None = None, sync_url: str | None = None) -> None:
+    """Refuse to run tests unless DATABASE_URL explicitly targets a rag_test database."""
+    active_db_url = db_url if db_url is not None else os.environ.get("DATABASE_URL", "")
+    active_sync_url = sync_url if sync_url is not None else os.environ.get("DATABASE_SYNC_URL", "")
+    if "rag_test" not in active_db_url or (active_sync_url and "rag_test" not in active_sync_url):
+        pytest.exit(
+            "CRITICAL SAFETY GUARD: Refusing to run pytest because DATABASE_URL "
+            f"('{active_db_url}') does not contain 'rag_test'. Never run pytest inside "
+            "the production rag-backend container or against ragdb! Use docker-compose.test.yml.",
+            returncode=1,
+        )
+
+
+def pytest_configure(config) -> None:
+    verify_test_database_safety()
+
+
+verify_test_database_safety()
+
+from app.auth.jwt_handler import create_access_token, hash_password  # noqa: E402
+from app.dependencies import get_db  # noqa: E402
+from app.main import create_app  # noqa: E402
+from app.models import Base  # noqa: E402
+from app.models.chunk import DocumentChunk  # noqa: E402
+from app.models.conversation import Conversation  # noqa: E402
+from app.models.document import Document, DocumentStatus  # noqa: E402
+from app.models.feedback import Feedback  # noqa: E402
+from app.models.message import Message  # noqa: E402
+from app.models.user import Role, User, user_roles  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -49,6 +69,7 @@ def anyio_backend() -> str:
 
 @pytest_asyncio.fixture(scope="session")
 async def test_engine():
+    verify_test_database_safety()
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))

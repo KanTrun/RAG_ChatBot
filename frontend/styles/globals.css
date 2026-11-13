@@ -10,6 +10,7 @@
   --color-surface-hover: #263044;
 
   --color-border: #1E293B;
+  --color-border-primary: #1E293B;
   --color-border-strong: #334155;
 
   --color-content-primary: #F1F5F9;
@@ -39,6 +40,7 @@
   --color-surface-hover: #e7edf5;
 
   --color-border: #d9e2ec;
+  --color-border-primary: #d9e2ec;
   --color-border-strong: #bcccdc;
 
   --color-content-primary: #102033;
@@ -68,6 +70,7 @@ body {
   font-family: var(--font-body);
   background-color: var(--color-surface-primary);
   color: var(--color-content-primary);
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -95,6 +98,46 @@ code, pre {
   40% {
     transform: translateY(-3px);
     opacity: 1;
+  }
+}
+
+@keyframes fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-slide-up {
+  animation: fade-slide-up 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-scale-pop {
+  animation: scale-pop 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-slide-up,
+  .animate-scale-pop,
+  .chat-live-dot,
+  .chat-skeleton-shimmer::before {
+    animation: none !important;
+    transition: none !important;
   }
 }
 
@@ -248,16 +291,13 @@ code, pre {
 .auth-inline-button:focus-visible,
 .auth-text-link:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-accent-primary) 82%, white 8%);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
 .auth-button-social {
   border-radius: 1rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
-  background: color-mix(in srgb, var(--color-surface-secondary) 92%, transparent);
-  box-shadow:
-    0 10px 30px rgba(2, 6, 23, 0.12),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  border: 1px solid color-mix(in srgb, var(--color-border-strong) 84%, transparent);
+  background: color-mix(in srgb, var(--color-surface-secondary) 88%, transparent);
   transition:
     transform 150ms ease,
     border-color 150ms ease,
@@ -267,22 +307,13 @@ code, pre {
 
 .auth-button-social:hover {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--color-border-strong) 92%, transparent);
-  background: color-mix(in srgb, var(--color-surface-hover) 42%, var(--color-surface-secondary));
-  box-shadow:
-    0 14px 34px rgba(2, 6, 23, 0.16),
-    0 1px 0 rgba(255, 255, 255, 0.08) inset;
+  border-color: color-mix(in srgb, var(--color-accent-primary) 42%, var(--color-border-strong));
+  background: color-mix(in srgb, var(--color-surface-hover) 72%, var(--color-surface-secondary));
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.16);
 }
 
-.auth-stat-chip {
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  background: color-mix(in srgb, var(--color-surface-secondary) 58%, transparent);
-  box-shadow: 0 14px 30px rgba(2, 6, 23, 0.1);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-skeleton-shimmer::before,
-  .chat-live-dot {
-    animation: none;
-  }
+.auth-badge {
+  border: 1px solid color-mix(in srgb, var(--color-border-strong) 78%, transparent);
+  background: color-mix(in srgb, var(--color-surface-secondary) 74%, transparent);
+  backdrop-filter: blur(16px);
 }

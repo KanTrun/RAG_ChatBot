@@ -1,7 +1,8 @@
-"""Ingestion pipeline: parse → chunk → embed → store in pgvector."""
+"""Ingestion pipeline: parse → chunk → deduplicated batch embed → bulk store in pgvector with granular stage tracking."""
 
 import hashlib
 import logging
+import unicodedata
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, text, update
@@ -18,8 +19,17 @@ from app.services.parser_factory import get_parser
 logger = logging.getLogger(__name__)
 
 
+def strip_vietnamese_accents(value: str) -> str:
+    """Normalize Vietnamese text to unaccented ASCII for bilingual/accent-insensitive BM25 matching."""
+    if not value:
+        return ""
+    replaced = value.replace("đ", "d").replace("Đ", "D")
+    decomposed = unicodedata.normalize("NFD", replaced)
+    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+
+
 class IngestionPipeline:
-    """Orchestrates document processing: parse → chunk → embed → store."""
+    """Orchestrates document processing: parse → chunk → embed → store with live stage updates."""
 
     def __init__(
         self,
@@ -35,14 +45,36 @@ class IngestionPipeline:
         self.default_chunk_overlap = (
             chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
         )
+        self.batch_size = max(1, settings.embedding_batch_size)
         self.chunking_engine = ChunkingEngine(
             chunk_size=self.default_chunk_size,
             chunk_overlap=self.default_chunk_overlap,
         )
 
+    async def _update_stage(
+        self,
+        document_id: UUID,
+        base_meta: dict,
+        stage: str,
+        progress_pct: int,
+        detail: str | None = None,
+    ) -> dict:
+        next_meta = {
+            **base_meta,
+            "ingestion_stage": stage,
+            "ingestion_progress": progress_pct,
+            "ingestion_detail": detail or stage,
+        }
+        await self.session.execute(
+            update(Document)
+            .where(Document.id == document_id)
+            .values(metadata_=next_meta)
+        )
+        await self.session.commit()
+        return next_meta
+
     async def process_document(self, document_id: UUID) -> None:
-        """Full ingestion pipeline for a single document."""
-        # 1. Load document from DB
+        """Full ingestion pipeline for a single document with stage-by-stage progress."""
         result = await self.session.execute(
             select(Document).where(Document.id == document_id)
         )
@@ -50,7 +82,6 @@ class IngestionPipeline:
         if document is None:
             raise ValueError(f"Document {document_id} not found")
 
-        # 2. Claim the document so only one dispatcher path indexes it at a time.
         updated = await self.session.execute(
             update(Document)
             .where(
@@ -65,20 +96,24 @@ class IngestionPipeline:
             return
 
         document.status = DocumentStatus.processing
+        doc_meta = dict(document.metadata_ or {})
 
         try:
-            # 3. Compute file hash for incremental indexing
+            # Stage 1: Parsing
+            doc_meta = await self._update_stage(
+                document_id, doc_meta, "parsing", 15, "Parsing document structure"
+            )
             file_hash = self._compute_file_hash(document.file_path)
-
-            # 4. Parse document
             parser = get_parser(document.file_path)
             pages = parser.parse(document.file_path)
 
             if not pages:
                 raise ValueError("Document produced no parseable content")
 
-            # 5. Chunk document (respect per-document chunking config if set)
-            doc_meta = document.metadata_ or {}
+            # Stage 2: Chunking
+            doc_meta = await self._update_stage(
+                document_id, doc_meta, "chunking", 30, f"Chunking {len(pages)} pages"
+            )
             doc_chunk_size = int(doc_meta.get("chunk_size") or self.default_chunk_size)
             doc_chunk_overlap = int(
                 doc_meta.get("chunk_overlap")
@@ -90,60 +125,68 @@ class IngestionPipeline:
                 chunk_overlap=min(doc_chunk_overlap, max(0, doc_chunk_size - 1)),
             )
             chunks = chunker.chunk_document(pages, document_id)
+            total_chunks = len(chunks)
             logger.info(
                 "Document %s: %s pages → %s chunks (size=%s, overlap=%s)",
                 document_id,
                 len(pages),
-                len(chunks),
+                total_chunks,
                 doc_chunk_size,
                 doc_chunk_overlap,
             )
 
-            # 6. Embed in batches
-            embedded_chunks = await self._embed_chunks(chunks)
+            # Stage 3: Deduplicated Batch Embedding with progress tracking
+            embedded_chunks = await self._embed_chunks(
+                chunks, document_id=document_id, doc_meta=doc_meta
+            )
 
-            # 7. Delete existing chunks (re-index case)
+            # Stage 4: Bulk DB Insert
+            doc_meta = await self._update_stage(
+                document_id,
+                doc_meta,
+                "storing",
+                90,
+                f"Storing {total_chunks} chunks in pgvector",
+            )
             await self.session.execute(
                 delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
             )
 
-            # 8. Bulk insert new chunks with search_vector explicitly populated for BM25
-            chunk_rows = [
-                DocumentChunk(
-                    document_id=document_id,
-                    content=chunk.content,
-                    embedding=emb_result.dense,
-                    sparse_vector=emb_result.sparse,
-                    search_vector=func.to_tsvector("simple", chunk.content),
-                    chunk_index=chunk.chunk_index,
-                    page_number=chunk.page_number,
-                    section=chunk.section,
-                    token_count=chunk.token_count,
-                    metadata_=chunk.metadata,
+            chunk_rows = []
+            for chunk, emb_result in embedded_chunks:
+                unaccented = strip_vietnamese_accents(chunk.content)
+                searchable_content = (
+                    f"{chunk.content} {unaccented}"
+                    if unaccented != chunk.content
+                    else chunk.content
                 )
-                for chunk, emb_result in embedded_chunks
-            ]
+                chunk_meta = {
+                    **chunk.metadata,
+                    "content_hash": hashlib.sha256(chunk.content.encode("utf-8")).hexdigest(),
+                }
+                chunk_rows.append(
+                    DocumentChunk(
+                        document_id=document_id,
+                        content=chunk.content,
+                        embedding=emb_result.dense,
+                        sparse_vector=emb_result.sparse,
+                        search_vector=func.to_tsvector("simple", searchable_content),
+                        chunk_index=chunk.chunk_index,
+                        page_number=chunk.page_number,
+                        section=chunk.section,
+                        token_count=chunk.token_count,
+                        metadata_=chunk_meta,
+                    )
+                )
+
             self.session.add_all(chunk_rows)
             await self.session.flush()
-
-            # Ensure search_vector is populated even if trigger was bypassed
-            await self.session.execute(
-                text(
-                    """
-                    UPDATE document_chunks
-                    SET search_vector = to_tsvector('simple', COALESCE(content, ''))
-                    WHERE document_id = CAST(:doc_id AS uuid)
-                      AND search_vector IS NULL
-                    """
-                ),
-                {"doc_id": str(document_id)},
-            )
 
             distinct_sections = sorted(
                 {chunk.section for chunk in chunks if chunk.section}
             )
 
-            # 9. Update document status
+            # Stage 5: Indexed
             await self.session.execute(
                 update(Document)
                 .where(Document.id == document_id)
@@ -158,6 +201,9 @@ class IngestionPipeline:
                         "chunk_size": doc_chunk_size,
                         "chunk_overlap": doc_chunk_overlap,
                         "sections": distinct_sections,
+                        "ingestion_stage": "indexed",
+                        "ingestion_progress": 100,
+                        "ingestion_detail": f"Indexed {len(chunk_rows)} chunks across {len(distinct_sections)} sections",
                     },
                     error_message=None,
                 )
@@ -173,12 +219,17 @@ class IngestionPipeline:
 
         except Exception as e:
             await self.session.rollback()
-            # Set document status to failed with clear human-readable reason
             await self.session.execute(
                 update(Document)
                 .where(Document.id == document_id)
                 .values(
                     status=DocumentStatus.failed,
+                    metadata_={
+                        **doc_meta,
+                        "ingestion_stage": "failed",
+                        "ingestion_progress": 0,
+                        "ingestion_detail": str(e)[:300],
+                    },
                     error_message=str(e)[:1000],
                 )
             )
@@ -187,21 +238,62 @@ class IngestionPipeline:
             raise
 
     async def _embed_chunks(
-        self, chunks: list[ChunkData]
+        self,
+        chunks: list[ChunkData],
+        *,
+        document_id: UUID | None = None,
+        doc_meta: dict | None = None,
     ) -> list[tuple[ChunkData, "EmbeddingResult"]]:
-        """Embed chunks in batches, returning (chunk, embedding) pairs."""
+        """Embed chunks with content_hash deduplication and stage progress reporting."""
         from app.services.embedding_service import EmbeddingResult
 
-        batch_size = 32
-        results: list[tuple[ChunkData, EmbeddingResult]] = []
+        if not chunks:
+            return []
 
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            texts = [c.contextualized_text or c.content for c in batch]
-            embeddings = await self.embedding_service.embed_texts(texts)
-            results.extend(zip(batch, embeddings))
+        total = len(chunks)
+        if document_id is not None and doc_meta is not None:
+            await self._update_stage(
+                document_id,
+                doc_meta,
+                f"embedding 0/{total}",
+                35,
+                f"Embedding chunks (0/{total})",
+            )
 
-        return results
+        # Deduplicate identical chunk texts before calling the embedding service
+        unique_texts: list[str] = []
+        hash_to_unique_idx: dict[str, int] = {}
+        chunk_hashes: list[str] = []
+
+        for chunk in chunks:
+            text_val = chunk.contextualized_text or chunk.content
+            h = hashlib.sha256(text_val.encode("utf-8")).hexdigest()
+            chunk_hashes.append(h)
+            if h not in hash_to_unique_idx:
+                hash_to_unique_idx[h] = len(unique_texts)
+                unique_texts.append(text_val)
+
+        unique_embeddings: list[EmbeddingResult] = []
+        step = max(1, self.batch_size * 2)
+        for start in range(0, len(unique_texts), step):
+            sub_texts = unique_texts[start : start + step]
+            sub_embs = await self.embedding_service.embed_texts(sub_texts)
+            unique_embeddings.extend(sub_embs)
+            if document_id is not None and doc_meta is not None:
+                done_count = min(total, int((len(unique_embeddings) / max(1, len(unique_texts))) * total))
+                pct = 35 + int((done_count / max(1, total)) * 50)
+                await self._update_stage(
+                    document_id,
+                    doc_meta,
+                    f"embedding {done_count}/{total}",
+                    pct,
+                    f"Embedding chunks ({done_count}/{total})",
+                )
+
+        return [
+            (chunk, unique_embeddings[hash_to_unique_idx[h]])
+            for chunk, h in zip(chunks, chunk_hashes)
+        ]
 
     @staticmethod
     def _compute_file_hash(file_path: str) -> str:

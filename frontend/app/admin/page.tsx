@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Award, Lock, Play, ShieldAlert, Unlock, Users } from "lucide-react";
+import { Award, BarChart3, Lock, Play, ShieldAlert, Unlock, Users } from "lucide-react";
 import { StatsCards, type Stats } from "@/components/admin/stats-cards";
 import { UploadZone } from "@/components/admin/upload-zone";
 import { DocumentTable } from "@/components/admin/document-table";
@@ -151,7 +151,7 @@ export default function AdminDashboard() {
       <StatsCards stats={stats} />
 
       {/* Quality Evaluation Benchmark & History */}
-      <div className="rounded-xl border border-border-primary bg-surface-secondary p-5 space-y-4">
+      <div className="space-y-4 rounded-xl border border-border-primary bg-surface-secondary p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Award className="h-5 w-5 text-accent-primary" />
@@ -215,6 +215,51 @@ export default function AdminDashboard() {
                 </p>
               </div>
             </div>
+
+            {evaluations.history.length > 0 && (
+              <div className="rounded-lg border border-border-primary bg-surface-primary p-4">
+                <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-content-primary">
+                  <BarChart3 className="h-4 w-4 text-accent-primary" />
+                  <span>Evaluation Trend Across Runs</span>
+                </div>
+                <div className="space-y-2.5">
+                  {evaluations.history.slice(0, 6).map((run) => (
+                    <div key={`chart-${run.run_id}`} className="space-y-1 text-xs">
+                      <div className="flex items-center justify-between text-[11px] text-content-secondary">
+                        <span className="font-mono font-medium text-content-primary">
+                          {run.run_id} ({run.bm25_enabled ? "Hybrid BM25+Vec" : "Vector-Only"})
+                        </span>
+                        <span>
+                          Faithfulness {(run.faithfulness * 100).toFixed(1)}% · Precision{" "}
+                          {(run.context_precision * 100).toFixed(1)}% · Recall{" "}
+                          {(run.context_recall * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="h-2 overflow-hidden rounded-full bg-surface-secondary">
+                          <div
+                            className="h-full rounded-full bg-emerald-400 transition-all"
+                            style={{ width: `${Math.min(100, Math.round(run.faithfulness * 100))}%` }}
+                          />
+                        </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-surface-secondary">
+                          <div
+                            className="h-full rounded-full bg-indigo-400 transition-all"
+                            style={{ width: `${Math.min(100, Math.round(run.context_precision * 100))}%` }}
+                          />
+                        </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-surface-secondary">
+                          <div
+                            className="h-full rounded-full bg-teal-400 transition-all"
+                            style={{ width: `${Math.min(100, Math.round(run.context_recall * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {evaluations.history.length > 0 && (
               <div className="overflow-x-auto rounded-lg border border-border-primary">
@@ -348,19 +393,15 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      <div className="grid gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          <UploadZone onUploadComplete={() => setRefreshKey((k) => k + 1)} />
-        </div>
-        <div className="lg:col-span-2">
-          <IngestionStatus enabled={checkedAccess && !accessDenied} />
-        </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <UploadZone onUploadComplete={() => setRefreshKey((k) => k + 1)} />
+        <IngestionStatus />
       </div>
 
       <DocumentTable
         key={refreshKey}
         mode="admin"
-        title="All documents"
+        title="All Documents"
         onChanged={() => setRefreshKey((k) => k + 1)}
       />
     </div>

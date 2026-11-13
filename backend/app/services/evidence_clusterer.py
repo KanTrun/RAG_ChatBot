@@ -54,9 +54,9 @@ def build_evidence_clusters(
     for chunk in ranked_chunks:
         metadata = chunk.metadata
         cluster_key = (
-            str(metadata.get("parent_block_id"))
-            or str(metadata.get("section_path"))
-            or str(metadata.get("section"))
+            str(metadata.get("parent_block_id") or "")
+            or str(metadata.get("section_path") or "")
+            or str(metadata.get("section") or "")
             or chunk.chunk_id
         )
         grouped[cluster_key].append(chunk)
@@ -196,6 +196,21 @@ def select_evidence_chunks(
             cluster_coverage.append(_cluster_diagnostic(cluster))
             if len({chunk.metadata.get("section_path") for chunk in selected}) >= 2:
                 break
+
+    # Second pass: fill remaining top_k slots from unselected non-boilerplate clusters
+    if len(selected) < top_k:
+        for cluster in clusters:
+            if len(selected) >= top_k:
+                break
+            if cluster.cluster_id in selected_cluster_ids:
+                continue
+            if cluster.block_type in LOW_VALUE_BLOCK_TYPES:
+                continue
+            selected.append(_annotate_chunk(cluster.chunks[0], None, cluster))
+            selected_cluster_ids.add(cluster.cluster_id)
+            if cluster.section_path:
+                used_sections.add(cluster.section_path)
+            cluster_coverage.append(_cluster_diagnostic(cluster))
 
     if len(selected) < top_k:
         for cluster in clusters:

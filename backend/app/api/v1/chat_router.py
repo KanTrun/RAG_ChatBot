@@ -26,6 +26,7 @@ from app.prompts.system_prompt import (
     GENERAL_ONLY_PROMPT,
     HYBRID_SYSTEM_PROMPT,
     STRICT_DOCUMENT_PROMPT,
+    detect_query_language,
 )
 from app.schemas.chat_schemas import (
     ChatRequest,
@@ -35,6 +36,7 @@ from app.schemas.chat_schemas import (
     MessageResponse,
 )
 from app.schemas.common_schemas import PaginatedResponse, PaginationParams
+from app.security.output_validator import validate_and_clean_citations
 from app.services.context_assembler import AssembledContext
 from app.services.conversation_document_context import (
     load_active_document_context,
@@ -79,6 +81,29 @@ STRICT_LOW_SUPPORT_RESPONSE = (
     "I could not find enough support in the current document context to answer that. "
     "Try selecting the relevant documents, waiting for indexing to finish, or ask a question that is more directly covered by the documents."
 )
+
+
+def build_low_support_abstention_reply(
+    query: str,
+    available_doc_titles: list[str] | None = None,
+) -> str:
+    """Build a language-aware abstention reply suggesting available documents when present."""
+    lang = detect_query_language(query)
+    titles = [t.strip() for t in (available_doc_titles or []) if t and t.strip()]
+    if lang == "vi":
+        base = (
+            "Hiện chưa có thông tin về nội dung này trong tài liệu đã tải lên "
+            "(I could not find enough support in the current document context to answer that)."
+        )
+        if titles:
+            joined = ", ".join(f"'{t}'" for t in titles[:4])
+            return f"{base} Bạn có thể đặt câu hỏi xoay quanh các tài liệu hiện có: {joined}."
+        return f"{base} Vui lòng chọn đúng tài liệu liên quan hoặc tải thêm tài liệu mới."
+
+    if titles:
+        joined = ", ".join(f"'{t}'" for t in titles[:4])
+        return f"{STRICT_LOW_SUPPORT_RESPONSE} Available indexed documents: {joined}."
+    return STRICT_LOW_SUPPORT_RESPONSE
 
 
 def _count_tokens(text_value: str) -> int:
@@ -413,11 +438,10 @@ async def chat(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Chat endpoint with SSE streaming response, 120s first-token timeout, and diagnostics."""
+    """Chat endpoint with SSE streaming response, 120s first-token timeout, fast abstention, and citation validation."""
     start_time = time.time()
     settings = get_settings()
 
-    # Load or create conversation
     if body.conversation_id:
         conv = await db.get(Conversation, body.conversation_id)
         if conv is None or conv.user_id != user.id:
@@ -457,7 +481,6 @@ async def chat(
         for item in serialize_active_documents(active_context.documents)
     ]
 
-    # Save user message
     user_msg = Message(
         conversation_id=conv.id,
         role=MessageRole.user,
@@ -561,7 +584,6 @@ async def chat(
 
     ensure_chat_providers_configured()
 
-    # Get conversation history for query rewriting
     history_result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conv.id)
@@ -628,12 +650,17 @@ async def chat(
     result.context.diagnostics["candidate_count"] = result.candidate_count
     result.context.diagnostics["rewrite_ms"] = rewrite_ms
 
+    available_doc_titles = [
+        doc.title or doc.file_name for doc in (active_context.indexed_documents or [])
+    ]
+    abstention_reply = build_low_support_abstention_reply(body.query, available_doc_titles)
+
     if strict_mode and (result.low_confidence or not has_grounded_context(result)):
         return StreamingResponse(
             stream_static_reply(
                 db,
                 conv,
-                STRICT_LOW_SUPPORT_RESPONSE,
+                abstention_reply,
                 start_time,
                 user_message_id=user_msg.id,
                 replace_messages=replace_messages,
@@ -649,7 +676,7 @@ async def chat(
             stream_static_reply(
                 db,
                 conv,
-                STRICT_LOW_SUPPORT_RESPONSE,
+                abstention_reply,
                 start_time,
                 user_message_id=user_msg.id,
                 replace_messages=replace_messages,
@@ -675,17 +702,16 @@ async def chat(
         context_tokens=result.context.total_tokens,
     )
 
-    # Build LLM messages
     messages = build_rag_messages(
         context=prompt_context,
         query=body.query,
         system_prompt=prompt,
         conversation_history=history[-4:] if history else None,
         answer_brief=None if allow_general_answer else result.context.answer_brief,
+        intent=retrieval_plan.intent.value,
     )
     prompt_tokens = sum(_count_tokens(m.get("content", "")) for m in messages)
 
-    # Prepare sources metadata for SSE
     sources_data = (
         []
         if allow_general_answer
@@ -718,7 +744,12 @@ async def chat(
     warmup_status = getattr(getattr(request, "app", None), "state", None)
     current_warmup = getattr(warmup_status, "model_warmup_status", "ready") if warmup_status else "ready"
 
-    def _finalize_diagnostics(content_text: str, gen_ms: int, total_ms: int) -> dict:
+    def _finalize_diagnostics(
+        content_text: str,
+        gen_ms: int,
+        total_ms: int,
+        removed_citations: list[int] | None = None,
+    ) -> dict:
         completion_tokens = _count_tokens(content_text)
         diag = dict(result.context.diagnostics or {})
         retrieval_ms = int(diag.get("retrieval_ms") or 0)
@@ -738,6 +769,8 @@ async def chat(
         diag["abstained"] = False
         diag["used_outside_knowledge"] = allow_general_answer
         diag["response_mode"] = body.response_mode.value
+        if removed_citations:
+            diag["invalid_citations_removed"] = removed_citations
         return diag
 
     async def event_stream():
@@ -746,7 +779,9 @@ async def chat(
         first_chunk_received = False
         try:
             if current_warmup == "warming_up":
-                yield f"data: {json.dumps({'type': 'status', 'status': 'loading_model', 'content': 'Đang tải model, vui lòng chờ...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'stage': 'loading_model', 'status': 'loading_model', 'content': 'Đang tải model, vui lòng chờ...'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'status': 'generating', 'content': 'Đang tổng hợp câu trả lời...'})}\n\n"
 
             stream = llm_provider.generate_stream(messages, generation_config).__aiter__()
             while True:
@@ -760,13 +795,22 @@ async def chat(
                 event = {"type": "chunk", "content": chunk}
                 yield f"data: {json.dumps(event)}\n\n"
 
-            # Sources event
+            cleaned_content, removed_citations = validate_and_clean_citations(
+                full_content,
+                len(sources_data),
+            )
+            full_content = cleaned_content
+
             yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
 
-            # Save assistant message
             gen_ms = int((time.perf_counter() - gen_start) * 1000)
             latency_ms = int((time.time() - start_time) * 1000)
-            final_diag = _finalize_diagnostics(full_content, gen_ms, latency_ms)
+            final_diag = _finalize_diagnostics(
+                full_content,
+                gen_ms,
+                latency_ms,
+                removed_citations=removed_citations,
+            )
             completion_tokens = final_diag["tokens"]["completion_tokens"]
 
             assistant_msg = Message(
@@ -792,7 +836,6 @@ async def chat(
                 diagnostics=final_diag,
             )
 
-            # Done event
             done = {
                 "type": "done",
                 "user_message_id": str(user_msg.id),
@@ -809,8 +852,18 @@ async def chat(
             logger.exception("Stream error")
             gen_ms = int((time.perf_counter() - gen_start) * 1000)
             if full_content.strip():
+                cleaned_content, removed_citations = validate_and_clean_citations(
+                    full_content,
+                    len(sources_data),
+                )
+                full_content = cleaned_content
                 latency_ms = int((time.time() - start_time) * 1000)
-                final_diag = _finalize_diagnostics(full_content, gen_ms, latency_ms)
+                final_diag = _finalize_diagnostics(
+                    full_content,
+                    gen_ms,
+                    latency_ms,
+                    removed_citations=removed_citations,
+                )
                 assistant_msg = Message(
                     conversation_id=conv.id,
                     role=MessageRole.assistant,
@@ -851,6 +904,7 @@ async def chat(
             fallback_content = build_grounded_fallback_answer(
                 body.query,
                 result.context.context_text,
+                intent=retrieval_plan.intent.value,
             )
             if fallback_content:
                 latency_ms = int((time.time() - start_time) * 1000)

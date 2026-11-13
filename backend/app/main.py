@@ -93,18 +93,59 @@ async def _check_redis_health(redis_url: str) -> dict:
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
-            timeout=2.0,
+            timeout=1.5,
         )
         writer.write(b"*1\r\n$4\r\nPING\r\n")
         await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        line = await asyncio.wait_for(reader.readline(), timeout=1.5)
         writer.close()
         await writer.wait_closed()
         if line.startswith(b"+PONG") or line.startswith(b"-NOAUTH"):
             return {"status": "healthy", "host": host, "port": port}
-        return {"status": "degraded", "host": host, "port": port, "response": line.decode("utf-8", errors="ignore").strip()}
+        return {
+            "status": "degraded",
+            "host": host,
+            "port": port,
+            "response": line.decode("utf-8", errors="ignore").strip(),
+        }
     except Exception as exc:
         return {"status": "unreachable", "host": host, "port": port, "error": str(exc)}
+
+
+async def _check_celery_worker_health(redis_reachable: bool) -> dict:
+    """Verify Celery task registration AND live worker ping when Redis broker is reachable."""
+    from app.workers.celery_app import celery_app
+
+    registered_tasks = sorted(
+        name for name in celery_app.tasks.keys() if not name.startswith("celery.")
+    )
+    task_registered = "ingestion.process_document" in registered_tasks
+    active_workers: list[str] = []
+    ping_ok = False
+    ping_error: str | None = None
+
+    if redis_reachable:
+        try:
+            ping_resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: celery_app.control.inspect(timeout=0.8).ping()
+                ),
+                timeout=1.5,
+            )
+            if isinstance(ping_resp, dict) and ping_resp:
+                active_workers = sorted(ping_resp.keys())
+                ping_ok = True
+        except Exception as exc:
+            ping_error = str(exc)
+
+    return {
+        "status": "healthy" if (task_registered and (ping_ok or not redis_reachable)) else "degraded",
+        "ingestion_task_registered": task_registered,
+        "worker_ping_ok": ping_ok,
+        "active_workers": active_workers,
+        "registered_tasks": registered_tasks,
+        **({"ping_error": ping_error} if ping_error else {}),
+    }
 
 
 @asynccontextmanager
@@ -112,7 +153,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Startup/shutdown lifecycle. Initializes DB engine, verifies pgvector, backfills BM25, and warms up models."""
     settings = get_settings()
 
-    # 1. Validate provider/model configuration upfront
     config_errors = validate_provider_settings(settings)
     app.state.provider_config_errors = config_errors
     if config_errors:
@@ -132,7 +172,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.model_warmup_error = None
     app.state.ollama_check = None
 
-    # 2. Verify pgvector extension & backfill BM25 search_vector
     async with engine.begin() as conn:
         result = await conn.execute(
             text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
@@ -152,7 +191,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             display_name=settings.bootstrap_admin_display_name,
         )
 
-    # 3. Check Ollama models & warm up on startup
     warmup_task: asyncio.Task | None = None
     if settings.ollama_warmup_on_startup and "ollama" in {
         settings.embedding_provider,
@@ -183,7 +221,6 @@ def create_app() -> FastAPI:
     app.state.provider_config_errors = []
     app.state.ollama_check = None
 
-    # CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.backend_cors_origins,
@@ -192,7 +229,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Comprehensive health check
     @app.get("/health")
     async def health_check():
         current_settings = get_settings()
@@ -208,17 +244,8 @@ def create_app() -> FastAPI:
             db_status = {"status": "uninitialized"}
 
         redis_status = await _check_redis_health(current_settings.redis_url)
-
-        from app.workers.celery_app import celery_app
-
-        registered_tasks = sorted(
-            name for name in celery_app.tasks.keys() if not name.startswith("celery.")
-        )
-        celery_status = {
-            "status": "healthy" if "ingestion.process_document" in registered_tasks else "misconfigured",
-            "ingestion_task_registered": "ingestion.process_document" in registered_tasks,
-            "registered_tasks": registered_tasks,
-        }
+        redis_ok = redis_status.get("status") == "healthy"
+        celery_status = await _check_celery_worker_health(redis_ok)
 
         ollama_status = getattr(app.state, "ollama_check", None)
         if ollama_status is None:
@@ -247,7 +274,6 @@ def create_app() -> FastAPI:
             },
         }
 
-    # API v1 routers
     from fastapi import APIRouter
 
     api_v1 = APIRouter(prefix="/api/v1")
@@ -258,13 +284,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(auth_router)
     app.include_router(api_v1)
 
-    # Error handlers
     register_error_handlers(app)
-
-    # Rate limiting
     app.add_middleware(RateLimitMiddleware)
-
-    # Tracing (Langfuse)
     app.add_middleware(TracingMiddleware)
 
     return app

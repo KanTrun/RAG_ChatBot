@@ -180,6 +180,14 @@ def test_bm25_tsquery_builder_strips_question_words_and_focus_instructions():
     how_tsquery = RetrievalService._build_bm25_tsquery_string("How does hybrid search work?")
     assert how_tsquery == "hybrid | search"
 
+    vi_tsquery = RetrievalService._build_bm25_tsquery_string(
+        "Cơ chế truy xuất lai hoạt động như thế nào?",
+        include_unaccented_variants=True,
+    )
+    assert "truy" in vi_tsquery
+    assert "xuất" in vi_tsquery
+    assert "xuat" in vi_tsquery
+
 
 @pytest.mark.anyio
 async def test_bm25_search_finds_chunks_when_query_contains_document_keywords(
@@ -545,8 +553,8 @@ def test_grounded_fallback_answer_is_structured_and_cited():
     )
 
     assert answer is not None
-    assert "According to the retrieved document context" in answer
     assert "[1]" in answer
+    assert "Hybrid retrieval" in answer or "hybrid retrieval" in answer
 
 
 @pytest.mark.anyio
@@ -580,7 +588,8 @@ async def test_ollama_embedding_service_rejects_dimension_mismatch(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_ollama_embedding_service_falls_back_when_provider_unreachable(monkeypatch):
+async def test_ollama_embedding_service_raises_when_provider_unreachable(monkeypatch):
+    """Phase 1 honesty requirement: never return fake hash embeddings when Ollama is down."""
     class FakeClient:
         def __init__(self, timeout):
             self.timeout = timeout
@@ -598,10 +607,8 @@ async def test_ollama_embedding_service_falls_back_when_provider_unreachable(mon
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
 
-    embeddings = await OllamaEmbeddingService().embed_texts(["AlphaProject"])
-
-    assert len(embeddings) == 1
-    assert len(embeddings[0].dense) == 1024
+    with pytest.raises(RuntimeError, match="unreachable"):
+        await OllamaEmbeddingService().embed_texts(["AlphaProject"])
 
 
 @pytest.mark.integration

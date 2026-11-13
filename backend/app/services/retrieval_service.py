@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 import re
 import time
+import unicodedata
 from uuid import UUID
 
 import numpy as np
@@ -55,8 +56,18 @@ _BM25_STOP_WORDS = {
     "la", "gi", "nhu", "the", "nao", "tai", "sao", "trong", "cua",
     "va", "cac", "nhung", "mot", "co", "duoc", "cho", "ve", "nay",
     "do", "hay", "khong", "là", "gì", "như", "thế", "nào", "tại",
-    " của", "và", "các", "những", "một", "có", "được", "về", "này",
+    "của", "và", "các", "những", "một", "có", "được", "về", "này",
+    "đó", "không", "cho", "với", "khi", "nào", "bao", "nhiêu",
 }
+
+
+def strip_vietnamese_accents_token(token: str) -> str:
+    """Return ASCII-folded token for Vietnamese accent-insensitive BM25 lookup."""
+    if not token:
+        return ""
+    replaced = token.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", replaced)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
 
 
 @dataclass
@@ -95,7 +106,7 @@ class RetrievalService:
         self.context_assembler = context_assembler or ContextAssembler()
 
     @staticmethod
-    def _build_bm25_tsquery_string(query: str) -> str:
+    def _build_bm25_tsquery_string(query: str, include_unaccented_variants: bool = False) -> str:
         """Build a PostgreSQL tsquery string from natural language query tokens."""
         base_query = query.split("\nFocus:")[0].strip()
         raw_tokens = re.findall(r"\w+", base_query.lower())
@@ -111,6 +122,10 @@ class RetrievalService:
             safe_tok = re.sub(r"[^\w]", "", tok)
             if safe_tok and safe_tok not in seen:
                 seen.append(safe_tok)
+            if include_unaccented_variants:
+                ascii_tok = re.sub(r"[^\w]", "", strip_vietnamese_accents_token(safe_tok))
+                if ascii_tok and ascii_tok != safe_tok and ascii_tok not in _BM25_STOP_WORDS and ascii_tok not in seen:
+                    seen.append(ascii_tok)
         return " | ".join(seen)
 
     async def retrieve(
@@ -133,12 +148,14 @@ class RetrievalService:
         retrieval_start = time.perf_counter()
         settings = get_settings()
         bm25_enabled = bool(settings.enable_bm25)
+        fast_mode = bool(getattr(settings, "fast_mode", False))
 
         active_document_count = len(filters.document_ids) if filters and filters.document_ids else 0
         plan = query_analysis or build_retrieval_plan(query, active_document_count)
         intent = plan.intent.value
         variant_specs: list[tuple[str, str]] = [("primary", query)]
-        variant_specs.extend(build_query_variants(query, plan, alternate_queries))
+        if not (fast_mode and intent in {"definition", "factual", "question"} and not alternate_queries):
+            variant_specs.extend(build_query_variants(query, plan, alternate_queries))
 
         embeddings_by_variant: dict[str, list[float] | None] = {}
         variant_texts = [text_value for _label, text_value in variant_specs]
@@ -257,7 +274,7 @@ class RetrievalService:
         reranked_children = await self.reranking_service.rerank(query, chunks_for_rerank, top_k=top_k_search)
         parent_candidates = self._build_parent_candidates(deduped[:top_k_search])
         parent_scores: dict[str, float] = {}
-        if parent_candidates:
+        if parent_candidates and not (fast_mode and intent in {"definition", "factual", "question"}):
             parent_ranked = await self.reranking_service.rerank(
                 query,
                 parent_candidates,
@@ -570,7 +587,7 @@ class RetrievalService:
         filters: SearchFilters | None,
         top_k: int,
     ) -> list[dict]:
-        """Cosine similarity search via pgvector HNSW index."""
+        """Cosine similarity search via pgvector HNSW index with tuned ef_search."""
         embedding_str = "[" + ",".join(str(value) for value in query_embedding) + "]"
         where_clauses = [
             "d.status = 'indexed'",
@@ -585,6 +602,12 @@ class RetrievalService:
             if filters.file_types:
                 where_clauses.append("d.file_type = ANY(:file_types)")
                 params["file_types"] = filters.file_types
+
+        ef_search = max(16, int(getattr(get_settings(), "hnsw_ef_search", 64)))
+        try:
+            await self.session.execute(text(f"SET LOCAL hnsw.ef_search = {ef_search}"))
+        except Exception:
+            pass
 
         sql = text(
             f"""
@@ -633,11 +656,11 @@ class RetrievalService:
         filters: SearchFilters | None,
         top_k: int,
     ) -> list[dict]:
-        """BM25-style full-text search via tsvector + ts_rank."""
+        """BM25-style full-text search via tsvector + ts_rank with Vietnamese accent-insensitive support."""
         if not get_settings().enable_bm25:
             return []
 
-        tsquery_str = self._build_bm25_tsquery_string(query)
+        tsquery_str = self._build_bm25_tsquery_string(query, include_unaccented_variants=True)
         if not tsquery_str:
             return []
 
@@ -721,8 +744,8 @@ class RetrievalService:
                 entry = item.copy()
                 entry["metadata"] = dict(entry.get("metadata") or {})
                 labels = set(entry.get("query_labels", []))
-                if entry.get("query_label"):
-                    labels.add(entry["query_label"])
+                if item.get("query_label"):
+                    labels.add(item["query_label"])
                 entry["query_labels"] = sorted(labels)
                 chunk_map[chunk_id] = entry
 
@@ -733,7 +756,7 @@ class RetrievalService:
                 entry = item.copy()
                 entry["metadata"] = dict(entry.get("metadata") or {})
                 labels = set(entry.get("query_labels", []))
-                if entry.get("query_label"):
+                if item.get("query_label"):
                     labels.add(entry["query_label"])
                 entry["query_labels"] = sorted(labels)
                 chunk_map[chunk_id] = entry
@@ -929,7 +952,6 @@ class RetrievalService:
                 f"{plan.low_support_hint} "
                 f"Top evidence score {top_score:.2f} is below threshold {confidence_threshold:.2f}."
             )
-        # Only enforce multi-section requirement when the document(s) actually have multiple sections
         has_multiple_sections = (
             True if available_section_count is None else available_section_count >= 2
         )
